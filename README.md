@@ -36,7 +36,7 @@ A DBeaver-style database tool written in Rust with [GPUI](https://gpui.rs/) (via
   - **Record view** shows one row as a form, and a **Text view** shows the result as an aligned plain-text table. The **value panel** shows long text, pretty-prints JSON, and has column statistics (NULLs, distinct values, min, max, sum, average). **Charts** draw the result as bars.
   - **Search results**: a quick text search narrows the rows of any result.
   - Copy a value, a row, the row as INSERT, a column as an SQL `IN (…)` list, or the whole grid as Markdown.
-  - Export to CSV, TSV, JSON, Markdown, plain text or SQL INSERTs. Table tabs export the pages that are loaded, and the message says so when the table has more rows.
+  - **Export** from the results toolbar or the grid's right-click menu (*Copy All As*, *Export to File*): CSV, TSV, JSON, Markdown, plain text or SQL INSERTs, to the clipboard or a file. Table tabs export the pages that are loaded, and the message says so when the table has more rows.
 - **Table tabs**: double-click a table.
   - The *Data*, *Columns* and *DDL* views. The data has a WHERE filter, 200 rows per page with "Load more", and a total row count.
   - **Edit the data in place**: double-click or F2 to edit a cell, set NULL, add, duplicate and delete rows. Changes stay highlighted until you **Save**. Save runs UPDATE/INSERT/DELETE by primary key in one transaction, so it all goes through or nothing does. You can also **Revert**.

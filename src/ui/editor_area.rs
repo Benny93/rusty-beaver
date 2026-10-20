@@ -1,6 +1,8 @@
 //! Toolbar and the tab area: SQL editor, result bars and the result / table views.
 
+use super::execute::export_menu;
 use super::*;
+use gpui_kit::component::menu::DropdownMenu as _;
 
 impl AppView {
     pub(super) fn toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -63,19 +65,16 @@ impl AppView {
                 }
             })))
             .child(Button::new("tb-run").ghost().small().disabled(self.tabs.is_empty()).icon(IconName::Play).tooltip("Execute the statement at the cursor (Cmd/Ctrl+Enter); the whole script: Cmd/Ctrl+Shift+Enter").on_click(cx.listener(|v, _, w, cx| v.run(v.active, Source::Statement, 0, w, cx, Box::new(|_, _, _, _| {})))))
-            .child(Button::new("tb-csv").ghost().small().disabled(self.tabs.is_empty()).icon(IconName::Download).tooltip("Export the grid: CSV, TSV, JSON, Markdown or SQL INSERTs, by file extension").on_click(cx.listener(|_, _, w, cx| {
-                let rx = cx.prompt_for_new_path(&dirs::home_dir().unwrap_or_default(), Some("result.csv"));
-                cx.spawn_in(w, async move |this, cx| {
-                    if let Ok(Ok(Some(path))) = rx.await {
-                        let _ = this.update(cx, |v, cx| {
-                            if let Err(e) = v.export_csv(&path, cx) {
-                                v.status = e;
-                            }
-                        });
-                    }
-                })
-                .detach();
-            })))
+            .child({
+                let view = cx.entity().downgrade();
+                Button::new("tb-csv")
+                    .ghost()
+                    .small()
+                    .disabled(self.tabs.is_empty())
+                    .icon(IconName::Download)
+                    .tooltip("Export the result: copy or save as CSV, TSV, JSON, Markdown, SQL or text")
+                    .dropdown_menu(move |m, _, _| export_menu(m, &view, true, true))
+            })
             .child(
                 Button::new("tb-delete")
                     .ghost()
@@ -118,7 +117,8 @@ impl AppView {
             .child(Button::new("tb-theme").ghost().small().icon(if self.dark { IconName::Sun } else { IconName::Moon }).tooltip("Toggle theme").on_click(cx.listener(|v, _, w, cx| v.set_theme(!v.dark, w, cx))))
     }
 
-    pub(super) fn editor_area(&self, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn editor_area(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let view = cx.entity().downgrade();
         let t = cx.theme().clone();
         if self.tabs.is_empty() {
             return v_flex()
@@ -346,7 +346,17 @@ impl AppView {
                 )
             })
             .when(tab.view == TableView::Data, |d| {
+                let export_view = view.clone();
                 d.child(
+                    Button::new("results-export")
+                        .small()
+                        .ghost()
+                        .icon(IconName::Download)
+                        .label("Export")
+                        .tooltip("Copy or save the result as CSV, TSV, JSON, Markdown, SQL or text")
+                        .dropdown_menu(move |m, _, _| export_menu(m, &export_view, true, true)),
+                )
+                .child(
                     Button::new("text-view")
                         .small()
                         .map(|b| {
@@ -363,6 +373,13 @@ impl AppView {
                             cx.notify();
                         })),
                 )
+                .when(tab.text_view, |d| {
+                    let text = self
+                        .export_text("txt", cx)
+                        .map(|(t, _)| t)
+                        .unwrap_or_default();
+                    d.child(self.copy_button("copy-text-view", text, cx))
+                })
                 .child(
                     Button::new("chart")
                         .small()
@@ -486,19 +503,13 @@ impl AppView {
                     .export_text("txt", cx)
                     .map(|(t, _)| t)
                     .unwrap_or_default();
-                div()
-                    .id("text-view")
-                    .size_full()
-                    .overflow_scroll()
-                    .p_2()
-                    .text_sm()
-                    .font_family(t.mono_font_family.clone())
-                    .whitespace_nowrap()
-                    .children(
-                        text.lines()
-                            .map(|l| div().child(l.to_string()))
-                            .collect::<Vec<_>>(),
-                    )
+                if tab.text.read(cx).value() != text.as_str() {
+                    tab.text.update(cx, |e, cx| e.set_value(text, window, cx));
+                }
+                Editor::new(&tab.text)
+                    .bordered(false)
+                    .readonly(true)
+                    .h(relative(1.))
                     .into_any_element()
             }
             TableView::Data if tab.chart => self.chart_view(ix, cx),
@@ -507,13 +518,20 @@ impl AppView {
                 .id("grid-wrap")
                 .size_full()
                 .child(DataTable::new(&tab.grid).stripe(true))
-                .context_menu(move |menu: PopupMenu, _, _| {
+                .context_menu(move |menu: PopupMenu, w, cx| {
+                    let (copy_view, save_view) = (view.clone(), view.clone());
                     let menu = menu
                         .menu("Copy Value", Box::new(CopyValue))
                         .menu("Copy Row", Box::new(CopyRow))
                         .menu("Copy as INSERT", Box::new(CopyInsert))
                         .menu("Copy Column as IN List", Box::new(CopyColumnInList))
-                        .menu("Copy All as Markdown", Box::new(CopyAllMarkdown));
+                        .separator()
+                        .submenu("Copy All As", w, cx, move |m, _, _| {
+                            export_menu(m, &copy_view, true, false)
+                        })
+                        .submenu("Export to File", w, cx, move |m, _, _| {
+                            export_menu(m, &save_view, false, true)
+                        });
                     if is_table {
                         menu.separator()
                             .menu("Filter by This Value", Box::new(FilterByValue))

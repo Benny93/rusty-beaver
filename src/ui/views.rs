@@ -137,7 +137,8 @@ impl AppView {
                 div()
                     .id("value-text")
                     .flex_1()
-                    .overflow_y_scroll()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
                     .p_2()
                     .text_sm()
                     .font_family(t.mono_font_family.clone())
@@ -225,7 +226,8 @@ impl AppView {
                 div()
                     .id("record")
                     .flex_1()
-                    .overflow_y_scroll()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
                     .px_2()
                     .children(g.r.columns.iter().enumerate().map(|(c, name)| {
                         let v = g.value(id, c);

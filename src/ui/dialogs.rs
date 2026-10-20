@@ -64,18 +64,25 @@ impl AppView {
                         .child(div().text_xs().text_color(t.muted_foreground).child(
                             "Values are inserted as typed: quote text ('Private'), numbers as is.",
                         ))
-                        .children(p.inputs.iter().map(|(n, input)| {
-                            h_flex()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .w(px(120.))
-                                        .font_family(t.mono_font_family.clone())
-                                        .text_color(Hsla::from(BRAND))
-                                        .child(format!(":{n}")),
-                                )
-                                .child(div().flex_1().child(Input::new(input)))
-                        }))
+                        .child(
+                            v_flex()
+                                .id("params-list")
+                                .gap_3()
+                                .max_h(px(360.))
+                                .overflow_y_scrollbar()
+                                .children(p.inputs.iter().map(|(n, input)| {
+                                    h_flex()
+                                        .gap_2()
+                                        .child(
+                                            div()
+                                                .w(px(120.))
+                                                .font_family(t.mono_font_family.clone())
+                                                .text_color(Hsla::from(BRAND))
+                                                .child(format!(":{n}")),
+                                        )
+                                        .child(div().flex_1().child(Input::new(input)))
+                                })),
+                        )
                         .child(
                             h_flex()
                                 .gap_2()
@@ -502,7 +509,7 @@ impl AppView {
                                 )),
                         )
                         // Only the form scrolls: title and buttons stay in view.
-                        .child(v_flex().id("dialog-form").flex_1().min_h_0().overflow_y_scroll().gap_3()
+                        .child(v_flex().id("dialog-form").flex_1().min_h_0().overflow_y_scrollbar().gap_3()
                         .child(section("Connection"))
                         .child(drivers)
                         .child(field("Connection name", &d.name))

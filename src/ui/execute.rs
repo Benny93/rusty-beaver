@@ -546,4 +546,86 @@ impl AppView {
         cx.notify();
         Ok(msg)
     }
+
+    /// The whole result (the loaded rows) to the clipboard in one of `EXPORT_FORMATS`.
+    pub(super) fn copy_all(&mut self, ext: &str, cx: &mut Context<Self>) {
+        let label = EXPORT_FORMATS
+            .iter()
+            .find(|f| f.0 == ext)
+            .map_or(ext, |f| f.1);
+        self.status = match self.export_text(ext, cx) {
+            Ok((text, rows)) => {
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                format!("Copied {} as {label}", plural(rows, "row"))
+            }
+            Err(e) => e,
+        };
+        cx.notify();
+    }
+
+    /// Ask for a file name (`<table or result>.<ext>`), then write the result there.
+    pub(super) fn export_to_file(
+        &mut self,
+        ext: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Table(n)) => n.replace(['.', '/', '\\'], "_"),
+            _ => "result".into(),
+        };
+        let rx = cx.prompt_for_new_path(
+            &dirs::home_dir().unwrap_or_default(),
+            Some(&format!("{name}.{ext}")),
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(path))) = rx.await {
+                let _ = this.update(cx, |v, cx| {
+                    if let Err(e) = v.export_csv(&path, cx) {
+                        v.status = e;
+                        cx.notify();
+                    }
+                });
+            }
+        })
+        .detach();
+    }
+}
+
+/// Result export formats: (file extension, label).
+pub(super) const EXPORT_FORMATS: [(&str, &str); 6] = [
+    ("csv", "CSV"),
+    ("tsv", "TSV (pastes into spreadsheets)"),
+    ("json", "JSON"),
+    ("md", "Markdown table"),
+    ("sql", "SQL INSERT statements"),
+    ("txt", "Plain-text table"),
+];
+
+/// "Copy all as" and "Save to file" entries for a menu.
+pub(super) fn export_menu(
+    menu: PopupMenu,
+    view: &WeakEntity<AppView>,
+    copy: bool,
+    save: bool,
+) -> PopupMenu {
+    let mut menu = menu;
+    if copy {
+        for (ext, label) in EXPORT_FORMATS {
+            menu = menu.item(menu_item(view, label, move |v, _, cx| v.copy_all(ext, cx)));
+        }
+    }
+    if copy && save {
+        menu = menu.separator();
+    }
+    if save {
+        for (ext, label) in EXPORT_FORMATS {
+            menu = menu.item(menu_item(
+                view,
+                &format!("Save as {label}…"),
+                move |v, w, cx| v.export_to_file(ext, w, cx),
+            ));
+        }
+    }
+    menu
 }

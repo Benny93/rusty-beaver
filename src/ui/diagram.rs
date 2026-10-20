@@ -144,7 +144,7 @@ impl AppView {
         div()
             .id(("er", ix))
             .size_full()
-            .overflow_scroll()
+            .overflow_scrollbar()
             .on_mouse_move(cx.listener(move |v, ev: &MouseMoveEvent, _, cx| {
                 let Some(t) = v.tabs.get_mut(ix) else { return };
                 let Some((name, start, (x0, y0))) = t.drag.clone() else {

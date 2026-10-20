@@ -360,7 +360,8 @@ impl AppView {
                 div()
                     .id("nav-scroll")
                     .flex_1()
-                    .overflow_y_scroll()
+                    .min_h_0()
+                    .overflow_y_scrollbar()
                     .px_2()
                     .py_1()
                     .children(list),

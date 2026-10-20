@@ -22,6 +22,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Editor, EditorState, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
+use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{
     ColumnSort, DataTable, TableDelegate as _, TableEvent, TableState,
@@ -260,6 +261,7 @@ pub fn run(mcp_port: u16) {
                         Some(window),
                         cx,
                     );
+                    show_scrollbars(cx);
                     let mcp = match mcp_status.recv_timeout(Duration::from_secs(2)) {
                         Ok(Ok(())) => format!("MCP: http://127.0.0.1:{mcp_port}/mcp"),
                         Ok(Err(e)) => format!("MCP off ({e})"),
@@ -357,6 +359,8 @@ struct EditorTab {
     view: TableView,
     /// CREATE statement of a table tab (read-only editor).
     ddl: Entity<EditorState>,
+    /// The result as a plain-text table (read-only editor, so it can be selected and copied).
+    text: Entity<EditorState>,
     /// WHERE clause of a table tab.
     filter: Entity<InputState>,
     /// Cell the user last clicked: (display row, column).
@@ -644,6 +648,7 @@ impl AppView {
         let grid = cx.new(|cx| TableState::new(Grid::default(), window, cx).cell_selectable(true));
         let columns = cx.new(|cx| TableState::new(Grid::default(), window, cx));
         let ddl = cx.new(|cx| EditorState::new(window, cx).language("sql"));
+        let text = cx.new(|cx| EditorState::new(window, cx));
         let filter =
             cx.new(|cx| InputState::new(window, cx).placeholder("WHERE …  (Enter applies)"));
         let edit_input = cx.new(|cx| InputState::new(window, cx));
@@ -705,6 +710,7 @@ impl AppView {
             columns,
             view: TableView::Data,
             ddl,
+            text,
             filter,
             cell: None,
             editing: None,
@@ -889,8 +895,14 @@ impl AppView {
             Some(window),
             cx,
         );
+        show_scrollbars(cx);
         cx.notify();
     }
+}
+
+/// Scrollbars stay visible wherever there is more to scroll (the default fades them out).
+fn show_scrollbars(cx: &mut App) {
+    Theme::set_scrollbar_mode(gpui_kit::component::scroll::ScrollbarMode::Always, cx);
 }
 
 fn system_dark(window: &Window) -> bool {
@@ -1211,7 +1223,7 @@ impl Render for AppView {
             .on_action(cx.listener(|v, _: &RevertChanges, w, cx| v.report(GridOp::Revert, w, cx)))
             .child(self.toolbar(cx))
             .child(
-                div().flex_1().child(
+                div().flex_1().min_h_0().child(
                     h_resizable("main-split")
                         .child(
                             resizable_panel()
@@ -1219,7 +1231,7 @@ impl Render for AppView {
                                 .size_range(px(180.)..px(600.))
                                 .child(self.navigator(cx)),
                         )
-                        .child(resizable_panel().child(self.editor_area(cx))),
+                        .child(resizable_panel().child(self.editor_area(window, cx))),
                 ),
             )
             .child(
@@ -1280,7 +1292,10 @@ impl Render for AppView {
                         }))
                         .child(
                             v_flex()
+                                .id("shortcuts")
                                 .w(px(560.))
+                                .max_h(relative(0.9))
+                                .overflow_y_scrollbar()
                                 .gap_1()
                                 .p_5()
                                 .rounded_lg()

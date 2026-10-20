@@ -680,6 +680,17 @@ impl AppView {
                     done,
                 )
             }
+            "shortcuts" => {
+                self.shortcuts = a["open"].as_bool().unwrap_or(true);
+                cx.notify();
+                now(
+                    self,
+                    Ok(json!({ "open": self.shortcuts })),
+                    window,
+                    cx,
+                    done,
+                )
+            }
             "connection_dialog" => {
                 if a["open"].as_bool().unwrap_or(true) {
                     let edit = a["connection"]

@@ -177,7 +177,7 @@ There are 54 tools. Each one changes the UI the user is looking at and returns s
 | Results | `get_results` (`index` for a script's result), `sort_results`, `search_results`, `results_as_text`, `chart`, `record_view`, `show_value`, `export_csv` (csv/tsv/json/md/txt/sql by extension) |
 | Table data | `open_table`, `set_table_view` (data/columns/ddl), `set_filter`, `load_more`, `edit_cell`, `add_row`, `duplicate_row`, `delete_row`, `open_referenced_row`, `save_changes` (`confirm` for production), `revert_changes`, `import_csv` |
 | Transactions | `set_auto_commit`, `commit`, `rollback` |
-| UI | `select_tab`, `close_tab`, `close_all_tabs`, `set_sidebar` (navigator/history), `get_history`, `set_theme` (dark/light/system) |
+| UI | `select_tab`, `close_tab`, `close_all_tabs`, `set_sidebar` (navigator/history), `get_history`, `set_theme` (dark/light/system), `shortcuts` (the F1 overview) |
 
 Try it without an agent:
 

@@ -1079,7 +1079,7 @@ impl Render for AppView {
             window.request_animation_frame();
         }
         let t = cx.theme().clone();
-        let dialog = self.dialog(cx);
+        let dialog = self.dialog(window, cx);
         let params_dialog = self.params_dialog(cx);
         // "PG · PostgreSQL 17.11" for the active tab's connection.
         let active_conn = self
@@ -1294,6 +1294,7 @@ impl Render for AppView {
                             v_flex()
                                 .id("shortcuts")
                                 .w(px(560.))
+                                .h_auto()
                                 .max_h(relative(0.9))
                                 .overflow_y_scrollbar()
                                 .gap_1()
@@ -1322,7 +1323,7 @@ impl Render for AppView {
                                                 .text_color(Hsla::from(BRAND))
                                                 .child(keys.replace("Mod", modkey)),
                                         )
-                                        .child(div().child(*what))
+                                        .child(div().flex_1().min_w_0().child(*what))
                                 }))
                                 .child(
                                     div()

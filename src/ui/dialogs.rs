@@ -67,6 +67,7 @@ impl AppView {
                         .child(
                             v_flex()
                                 .id("params-list")
+                                .h_auto()
                                 .gap_3()
                                 .max_h(px(360.))
                                 .overflow_y_scrollbar()
@@ -357,7 +358,7 @@ impl AppView {
         cx.notify();
     }
 
-    pub(super) fn dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    pub(super) fn dialog(&self, window: &Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let d = self.dialog.as_ref()?;
         let t = cx.theme().clone();
         let field = |label: &str, input: &Entity<InputState>| {
@@ -509,7 +510,10 @@ impl AppView {
                                 )),
                         )
                         // Only the form scrolls: title and buttons stay in view.
-                        .child(v_flex().id("dialog-form").flex_1().min_h_0().overflow_y_scrollbar().gap_3()
+                        .child(v_flex()
+                            .id("dialog-form")
+                            // Room left for the form under the title and above the buttons.
+                            .max_h((window.viewport_size().height * 0.92 - px(170.)).max(px(120.))).overflow_y_scrollbar().gap_3()
                         .child(section("Connection"))
                         .child(drivers)
                         .child(field("Connection name", &d.name))

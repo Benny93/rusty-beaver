@@ -776,6 +776,14 @@ impl Tools {
         self.ui("set_theme", json!({ "mode": a.mode })).await
     }
 
+    #[tool(description = "Open or close the keyboard shortcut overview (F1).")]
+    async fn shortcuts(
+        &self,
+        Parameters(a): Parameters<DialogArg>,
+    ) -> Result<CallToolResult, McpError> {
+        self.ui("shortcuts", json!({ "open": a.open })).await
+    }
+
     #[tool(
         description = "Open or close the New Connection dialog (to show it to the user; use add_connection to create one)."
     )]

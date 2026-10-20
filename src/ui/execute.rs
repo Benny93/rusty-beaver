@@ -1,0 +1,549 @@
+//! Running SQL: statements and scripts, parameters, production checks, explain, format, cancel, paging, export.
+
+use super::*;
+
+impl AppView {
+    /// Execute SQL in a tab (its editor text when `sql` is None; the selection if any).
+    pub(super) fn run(
+        &mut self,
+        tab: usize,
+        src: Source,
+        max_rows: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        done: Done,
+    ) {
+        // A new run replaces a parameter dialog still waiting on this tab.
+        if self.params.as_ref().is_some_and(|p| p.tab == tab) {
+            self.submit_params(false, window, cx);
+        }
+        if matches!(src, Source::Given(_))
+            && self.tabs.get(tab).is_some_and(|t| t.kind == TabKind::Sql)
+        {
+            self.save_session_soon(cx); // reads the editor a second later, after the text is in
+        }
+        let Some(t) = self.tabs.get_mut(tab) else {
+            return done(self, Err("no such tab".into()), window, cx);
+        };
+        let raw = matches!(src, Source::Raw(_));
+        let sql = match src {
+            Source::Given(sql) => {
+                t.editor
+                    .update(cx, |e, cx| e.set_value(sql.clone(), window, cx));
+                sql
+            }
+            Source::Script => t.editor.read(cx).value().to_string(),
+            Source::Raw(sql) => sql,
+            Source::Statement => {
+                let e = t.editor.read(cx);
+                let sel = e.selected_text().to_string();
+                if sel.trim().is_empty() {
+                    let text = e.value().to_string();
+                    text[db::statement_at(&text, e.cursor())].to_string()
+                } else {
+                    sel
+                }
+            }
+        };
+        if sql.trim().is_empty() {
+            return done(self, Err("the editor is empty".into()), window, cx);
+        }
+        // :name parameters: values from the agent (params_given), else ask in a dialog.
+        let given = std::mem::take(&mut t.params_given);
+        let names = if raw { vec![] } else { db::params(&sql) };
+        if !names.is_empty() {
+            if given {
+                return match db::bind(&sql, &t.param_values) {
+                    Ok(bound) => self.run(tab, Source::Raw(bound), max_rows, window, cx, done),
+                    Err(e) => done(
+                        self,
+                        Err(format!("{e} (pass params: {{{}}})", names.join(", "))),
+                        window,
+                        cx,
+                    ),
+                };
+            }
+            let inputs = names
+                .iter()
+                .map(|n| {
+                    let value = t.param_values.get(n).cloned().unwrap_or_default();
+                    let input = cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .placeholder("value as SQL, e.g. 42 or 'text'")
+                            .default_value(value)
+                    });
+                    cx.subscribe_in(&input, window, |v, _, ev: &InputEvent, w, cx| {
+                        if matches!(ev, InputEvent::PressEnter { .. }) {
+                            v.submit_params(true, w, cx);
+                        }
+                    })
+                    .detach();
+                    (n.clone(), input)
+                })
+                .collect::<Vec<_>>();
+            if let Some((_, first)) = inputs.first() {
+                first.update(cx, |i, cx| i.focus(window, cx));
+            }
+            self.params = Some(ParamPrompt {
+                tab,
+                sql,
+                inputs,
+                max_rows,
+                done: Some(done),
+            });
+            cx.notify();
+            return;
+        }
+        // Production: changing data needs a yes (the dialog, or `confirm` from an agent).
+        let (confirmed, agent) = (
+            std::mem::take(&mut t.confirmed),
+            std::mem::take(&mut t.agent),
+        );
+        let conn = t.conn;
+        if db::is_write(&sql)
+            && let Some(name) = self
+                .conn_ix(conn)
+                .filter(|&i| self.conns[i].cfg.read_only)
+                .map(|i| self.conns[i].cfg.name.clone())
+        {
+            return done(
+                self,
+                Err(format!(
+                    "{name} is read-only: statements that change data or schema are refused"
+                )),
+                window,
+                cx,
+            );
+        }
+        if !confirmed
+            && db::is_write(&sql)
+            && let Some(name) = self
+                .conn_ix(conn)
+                .filter(|&i| self.conns[i].cfg.production)
+                .map(|i| self.conns[i].cfg.name.clone())
+        {
+            if agent {
+                return done(
+                    self,
+                    Err(format!(
+                        "{name} is a production connection and this SQL changes data: run it again with confirm: true"
+                    )),
+                    window,
+                    cx,
+                );
+            }
+            let answer = window.prompt(
+                PromptLevel::Warning,
+                &format!("Run on production ({name})?"),
+                Some(&format!(
+                    "This changes data or schema:\n\n{}",
+                    sql.chars().take(400).collect::<String>()
+                )),
+                &["Run", "Cancel"],
+                cx,
+            );
+            cx.spawn_in(window, async move |this, cx| {
+                let yes = answer.await == Ok(0);
+                let _ = this.update_in(cx, |v, w, cx| {
+                    if yes {
+                        if let Some(t) = v.tabs.get_mut(tab) {
+                            t.confirmed = true;
+                        }
+                        v.run(tab, Source::Raw(sql), max_rows, w, cx, done);
+                    } else {
+                        done(v, Err("cancelled".into()), w, cx);
+                    }
+                });
+            })
+            .detach();
+            return;
+        }
+        let Some(t) = self.tabs.get_mut(tab) else {
+            return;
+        };
+        t.running = true;
+        t.started = Some(Instant::now());
+        t.editing = None;
+        let conn = t.conn;
+        let logged = sql.clone();
+        self.status = "Executing query…".into();
+        // Live "Executing… 2.4 s" while it runs.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(200))
+                    .await;
+                let running = this.update(cx, |v, cx| {
+                    cx.notify();
+                    v.tabs.iter().any(|t| t.running)
+                });
+                if !matches!(running, Ok(true)) {
+                    break;
+                }
+            }
+        })
+        .detach();
+        cx.notify();
+        // Manual commit: the first statement opens the transaction it then stays in.
+        let manual = self
+            .conn_ix(conn)
+            .is_some_and(|i| self.conns[i].cfg.manual_commit);
+        let in_tx = self.conn_ix(conn).is_some_and(|i| self.conns[i].in_tx);
+        let ends_tx = {
+            let head = sql.trim_start().to_ascii_uppercase();
+            ["COMMIT", "ROLLBACK", "END"]
+                .iter()
+                .any(|k| head.starts_with(k))
+        };
+        // Smart commit: only a change opens the transaction; reads run inside an open one.
+        let write = db::is_write(&sql);
+        let need_begin = manual && !in_tx && write && !ends_tx;
+        if manual && let Some(i) = self.conn_ix(conn) {
+            let c = &mut self.conns[i];
+            if ends_tx {
+                (c.in_tx, c.tx_statements) = (false, 0);
+            } else if write {
+                (c.in_tx, c.tx_statements) = (true, c.tx_statements + 1);
+            }
+        }
+        self.with_session::<Vec<QueryResult>>(
+            conn,
+            move |s| {
+                if need_begin {
+                    s.begin()?;
+                }
+                s.query_all(&sql)
+            },
+            window,
+            cx,
+            Box::new(move |v, r, window, cx| {
+                // The last result is shown; a script's others are one click away.
+                let r = r.map(|mut all| {
+                    let last = all.pop().unwrap_or_default();
+                    (last, all)
+                });
+                let conn_name = v
+                    .conn_ix(conn)
+                    .map(|i| v.conns[i].cfg.name.clone())
+                    .unwrap_or_default();
+                let entry = match &r {
+                    Ok((res, _)) => history::Entry {
+                        sql: logged,
+                        connection: conn_name,
+                        at: history::now(),
+                        ms: res.elapsed.as_secs_f64() * 1000.,
+                        outcome: match res.affected {
+                            Some(n) if res.columns.is_empty() => format!("{n} updated"),
+                            _ => plural(res.rows.len(), "row"),
+                        },
+                        ok: true,
+                    },
+                    Err(e) => history::Entry {
+                        sql: logged,
+                        connection: conn_name,
+                        at: history::now(),
+                        ms: 0.,
+                        outcome: e.lines().next().unwrap_or_default().to_string(),
+                        ok: false,
+                    },
+                };
+                history::append(&entry);
+                v.history.push(entry);
+                if v.history.len() > history::KEEP {
+                    v.history.remove(0);
+                }
+                let Some(t) = v.tabs.get_mut(tab) else { return };
+                t.running = false;
+                let out = match r {
+                    Ok((res, mut earlier)) => {
+                        let ms = res.elapsed.as_secs_f64() * 1000.;
+                        let n_results = earlier.len() + 1;
+                        let mut msg = match res.affected {
+                            Some(n) if res.columns.is_empty() => {
+                                format!("Updated rows: {n} · {ms:.1} ms")
+                            }
+                            _ => format!(
+                                "{}{} fetched · {ms:.1} ms",
+                                plural(res.rows.len(), "row"),
+                                if res.truncated { "+" } else { "" }
+                            ),
+                        };
+                        if n_results > 1 {
+                            msg = format!("{n_results} statements · last: {msg}");
+                        }
+                        let mut j = result_json(&res, max_rows);
+                        if n_results > 1 {
+                            j["results"] = json!(earlier.iter().chain([&res]).enumerate().map(|(i, r)| json!({ "index": i, "columns": r.columns, "row_count": r.rows.len(), "affected": r.affected })).collect::<Vec<_>>());
+                        }
+                        earlier.push(res.clone());
+                        t.results = earlier;
+                        t.result_ix = n_results - 1;
+                        t.grid.update(cx, |g, cx| {
+                            g.delegate_mut().set(res);
+                            g.refresh(cx);
+                        });
+                        v.status = msg.clone();
+                        t.message = Some(Ok(msg));
+                        Ok(j)
+                    }
+                    Err(e) => {
+                        v.status = "Query failed".into();
+                        t.message = Some(Err(e.clone()));
+                        Err(e)
+                    }
+                };
+                // DDL may have changed the table list.
+                if let Some(ix) = v.conn_ix(conn)
+                    && let Some(s) = v.conns[ix].session.clone()
+                    && let Ok(tables) = s.lock().unwrap().tables()
+                    && tables != v.conns[ix].tables
+                {
+                    v.conns[ix].tables = tables;
+                    v.load_catalog(conn, cx);
+                }
+                cx.notify();
+                done(v, out, window, cx)
+            }),
+        );
+    }
+
+    /// The selection, else the statement at the cursor, of a tab's editor.
+    pub(super) fn current_statement(&self, tab: usize, cx: &App) -> Option<String> {
+        let e = self.tabs.get(tab)?.editor.read(cx);
+        let sel = e.selected_text().to_string();
+        if !sel.trim().is_empty() {
+            return Some(sel);
+        }
+        let text = e.value().to_string();
+        Some(text[db::statement_at(&text, e.cursor())].to_string()).filter(|s| !s.trim().is_empty())
+    }
+
+    /// Show the query plan of the current statement in the result grid.
+    pub(super) fn explain(
+        &mut self,
+        tab: usize,
+        sql: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        done: Done,
+    ) {
+        let Some(sql) = sql.or_else(|| self.current_statement(tab, cx)) else {
+            return done(self, Err("nothing to explain".into()), window, cx);
+        };
+        let Some(t) = self.tabs.get(tab) else {
+            return done(self, Err("no such tab".into()), window, cx);
+        };
+        let driver = self
+            .conn_ix(t.conn)
+            .map(|i| self.conns[i].cfg.driver)
+            .unwrap_or(Driver::Sqlite);
+        let prefix = if driver == Driver::Sqlite {
+            "EXPLAIN QUERY PLAN "
+        } else {
+            "EXPLAIN "
+        };
+        let sql = format!("{prefix}{}", sql.trim().trim_end_matches(';'));
+        self.run(tab, Source::Raw(sql), 200, window, cx, done);
+    }
+
+    /// Format the selection, else the whole editor, of a tab (`format::format_sql`).
+    pub(super) fn format(
+        &mut self,
+        tab: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<String, String> {
+        let t = self.tabs.get(tab).ok_or("no tab open")?;
+        let (text, range) = {
+            let e = t.editor.read(cx);
+            (e.value().to_string(), e.selected_range())
+        };
+        let range = if range.is_empty() {
+            0..text.len()
+        } else {
+            range
+        };
+        let formatted = crate::format::format_sql(&text[range.clone()]);
+        let new = format!(
+            "{}{}{}",
+            &text[..range.start],
+            formatted.trim_end(),
+            &text[range.end..]
+        );
+        t.editor
+            .update(cx, |e, cx| e.set_value(new.clone(), window, cx));
+        self.save_session_soon(cx);
+        self.status = "Formatted".into();
+        cx.notify();
+        Ok(new)
+    }
+
+    /// Stop the statement running in a tab.
+    pub(super) fn cancel(&mut self, tab: usize, cx: &mut Context<Self>) -> Result<(), String> {
+        let t = self.tabs.get(tab).ok_or("no such tab")?;
+        if !t.running {
+            return Err("nothing is running".into());
+        }
+        let c = self
+            .conn_ix(t.conn)
+            .and_then(|i| self.conns[i].canceller.clone())
+            .ok_or("not connected")?;
+        self.status = "Cancelling…".into();
+        cx.background_spawn(async move {
+            if let Err(e) = c.cancel() {
+                eprintln!("cancel: {e}");
+            }
+        })
+        .detach();
+        cx.notify();
+        Ok(())
+    }
+
+    /// Re-run a table tab's SELECT with its current filter.
+    pub(super) fn reload_table(
+        &mut self,
+        tab: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        done: Done,
+    ) {
+        let Some(t) = self.tabs.get(tab) else {
+            return done(self, Err("no such tab".into()), window, cx);
+        };
+        let TabKind::Table(table) = &t.kind else {
+            return done(self, Err("not a table tab".into()), window, cx);
+        };
+        let Some(ix) = self.conn_ix(t.conn) else {
+            return;
+        };
+        let driver = self.conns[ix].cfg.driver;
+        let filter = t.filter.read(cx).value().to_string();
+        let sql = driver.select_all(table, &filter, t.limit);
+        let count = format!(
+            "SELECT count(*) FROM {}{};",
+            driver.table_ref(table),
+            if filter.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" WHERE {filter}")
+            }
+        );
+        let conn = t.conn;
+        self.run(
+            tab,
+            Source::Given(sql),
+            50,
+            window,
+            cx,
+            Box::new(move |v, r, w, cx| {
+                // Then the total, quietly (not in the history): "200 of 1,234 rows".
+                if r.is_ok() {
+                    v.with_session::<QueryResult>(
+                        conn,
+                        move |s| s.query(&count),
+                        w,
+                        cx,
+                        Box::new(move |v, c, _, cx| {
+                            if let Some(t) = v.tabs.get_mut(tab) {
+                                t.total =
+                                    c.ok().and_then(|c| c.rows.first()?.first()?.parse().ok());
+                            }
+                            cx.notify();
+                        }),
+                    );
+                }
+                done(v, r, w, cx)
+            }),
+        );
+    }
+
+    /// Show another result of the last script execution in the grid.
+    pub(super) fn show_result(
+        &mut self,
+        tab: usize,
+        i: usize,
+        cx: &mut Context<Self>,
+    ) -> Result<Value, String> {
+        let t = self.tabs.get_mut(tab).ok_or("no such tab")?;
+        let r = t.results.get(i).cloned().ok_or(format!(
+            "no result {i}; the last run produced {}",
+            t.results.len()
+        ))?;
+        t.result_ix = i;
+        let j = result_json(&r, 50);
+        t.grid.update(cx, |g, cx| {
+            g.delegate_mut().set(r);
+            g.refresh(cx);
+        });
+        cx.notify();
+        Ok(j)
+    }
+
+    /// Fetch the next page of a table tab (keeps the filter; pending edits must be saved first).
+    pub(super) fn load_more(
+        &mut self,
+        tab: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        done: Done,
+    ) {
+        let Some(t) = self.tabs.get_mut(tab) else {
+            return done(self, Err("no such tab".into()), window, cx);
+        };
+        if !t.grid.read(cx).delegate().changes.is_empty() {
+            return done(
+                self,
+                Err("save or revert the pending changes first".into()),
+                window,
+                cx,
+            );
+        }
+        t.limit += PAGE;
+        self.reload_table(tab, window, cx, done);
+    }
+
+    /// The active grid as shown, in the format of `ext` (see `db::export`).
+    pub(super) fn export_text(&self, ext: &str, cx: &App) -> Result<(String, usize), String> {
+        let t = self.tabs.get(self.active).ok_or("no tab open")?;
+        let r = &t.grid.read(cx).delegate().shown();
+        if r.columns.is_empty() {
+            return Err("no result to export".into());
+        }
+        let driver = self
+            .conn_ix(t.conn)
+            .map(|i| self.conns[i].cfg.driver)
+            .unwrap_or(Driver::Sqlite);
+        let table = match &t.kind {
+            TabKind::Table(n) => n.as_str(),
+            _ => "table_name",
+        };
+        Ok((db::export(r, ext, driver, table), r.rows.len()))
+    }
+
+    /// Export the active grid; the format follows the file extension (csv, tsv, json, md, sql).
+    pub(super) fn export_csv(
+        &mut self,
+        path: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) -> Result<String, String> {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("csv");
+        let (text, rows) = self.export_text(ext, cx)?;
+        std::fs::write(path, text).map_err(|e| e.to_string())?;
+        // A table tab holds one page: say so when the table has more rows.
+        let total = self
+            .tabs
+            .get(self.active)
+            .and_then(|t| t.total)
+            .filter(|&n| n as usize > rows);
+        let msg = match total {
+            Some(n) => format!(
+                "Exported {rows} of {n} rows (the loaded pages) to {}; Load more first, or export a SELECT",
+                path.display()
+            ),
+            None => format!("Exported {} to {}", plural(rows, "row"), path.display()),
+        };
+        self.status = msg.clone();
+        cx.notify();
+        Ok(msg)
+    }
+}

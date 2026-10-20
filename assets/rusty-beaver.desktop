@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Rusty Beaver
+GenericName=Database Tool
+Comment=DBeaver-style database tool for SQLite, PostgreSQL and MySQL
+Exec=rusty-beaver
+Icon=rusty-beaver
+Terminal=false
+Categories=Development;Database;
+Keywords=database;sql;sqlite;postgres;postgresql;mysql;dbeaver;
+StartupWMClass=rusty-beaver

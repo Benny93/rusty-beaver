@@ -1,0 +1,355 @@
+//! SQL autocompletion for the editor: keywords, the connection's tables and their columns.
+//! After `alias.` or `table.` only that table's columns are offered (aliases come from the
+//! FROM / JOIN clauses of the text).
+
+use gpui_kit::component::input::{CompletionProvider, Rope, RopeExt as _};
+use gpui_kit::{App, Task, Window};
+use lsp_types::{
+    CompletionContext, CompletionItem, CompletionItemKind, CompletionResponse, CompletionTextEdit,
+    TextEdit,
+};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+
+/// What a connection has: table names and, once loaded, their columns (name, type).
+#[derive(Default)]
+pub struct Catalog {
+    pub tables: Vec<String>,
+    /// Lower-case table name (and, for "schema.table", the bare name too) -> columns.
+    pub columns: HashMap<String, Vec<(String, String)>>,
+}
+
+impl Catalog {
+    pub fn set_columns(&mut self, table: &str, cols: Vec<(String, String)>) {
+        if let Some((_, bare)) = table.split_once('.') {
+            self.columns.insert(bare.to_lowercase(), cols.clone());
+        }
+        self.columns.insert(table.to_lowercase(), cols);
+    }
+}
+
+pub type SharedCatalog = Arc<Mutex<Catalog>>;
+
+const KEYWORDS: &[&str] = &[
+    "SELECT",
+    "FROM",
+    "WHERE",
+    "JOIN",
+    "LEFT JOIN",
+    "INNER JOIN",
+    "ON",
+    "GROUP BY",
+    "ORDER BY",
+    "HAVING",
+    "LIMIT",
+    "OFFSET",
+    "INSERT INTO",
+    "VALUES",
+    "UPDATE",
+    "SET",
+    "DELETE FROM",
+    "CREATE TABLE",
+    "CREATE VIEW",
+    "CREATE INDEX",
+    "DROP TABLE",
+    "ALTER TABLE",
+    "ADD COLUMN",
+    "PRIMARY KEY",
+    "FOREIGN KEY",
+    "REFERENCES",
+    "NOT NULL",
+    "DEFAULT",
+    "DISTINCT",
+    "AS",
+    "AND",
+    "OR",
+    "NOT",
+    "IN",
+    "IS NULL",
+    "IS NOT NULL",
+    "LIKE",
+    "BETWEEN",
+    "CASE",
+    "WHEN",
+    "THEN",
+    "ELSE",
+    "END",
+    "COUNT",
+    "SUM",
+    "AVG",
+    "MIN",
+    "MAX",
+    "UNION",
+    "UNION ALL",
+    "EXISTS",
+    "ASC",
+    "DESC",
+    "WITH",
+    "BEGIN",
+    "COMMIT",
+    "ROLLBACK",
+    "COALESCE",
+    "CAST",
+];
+
+#[derive(Debug, PartialEq)]
+pub struct Suggestion {
+    pub label: String,
+    pub kind: Kind,
+    pub detail: String,
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum Kind {
+    Keyword,
+    Table,
+    Column,
+}
+
+fn is_word(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// `alias -> table` from `FROM t a`, `JOIN t AS a` and bare `FROM t`.
+fn aliases(text: &str) -> HashMap<String, String> {
+    let words: Vec<&str> = text
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '(' || c == ')' || c == ';')
+        .filter(|w| !w.is_empty())
+        .collect();
+    let mut out = HashMap::new();
+    for (i, w) in words.iter().enumerate() {
+        if !(w.eq_ignore_ascii_case("from")
+            || w.eq_ignore_ascii_case("join")
+            || w.eq_ignore_ascii_case("update")
+            || w.eq_ignore_ascii_case("into"))
+        {
+            continue;
+        }
+        let Some(table) = words
+            .get(i + 1)
+            .map(|t| t.trim_matches(|c| c == '"' || c == '`'))
+        else {
+            continue;
+        };
+        out.insert(table.to_lowercase(), table.to_string());
+        let mut next = words.get(i + 2).copied();
+        if next.is_some_and(|n| n.eq_ignore_ascii_case("as")) {
+            next = words.get(i + 3).copied();
+        }
+        if let Some(a) = next.filter(|a| {
+            a.chars().all(is_word) && !KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(a))
+        }) {
+            out.insert(a.to_lowercase(), table.to_string());
+        }
+    }
+    out
+}
+
+/// Suggestions for the word ending at byte `offset`; returns where that word starts.
+pub fn suggest(text: &str, offset: usize, catalog: &Catalog) -> (usize, Vec<Suggestion>) {
+    // Offsets come from agents too: never cut inside a multi-byte character.
+    let before = &text[..text.floor_char_boundary(offset)];
+    let start = before
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| is_word(*c))
+        .last()
+        .map(|(i, _)| i)
+        .unwrap_or(before.len());
+    let prefix = before[start..].to_lowercase();
+    let qualifier = before[..start].strip_suffix('.').map(|q| {
+        let qs = q
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| is_word(*c) || *c == '"' || *c == '`')
+            .last()
+            .map(|(i, _)| i)
+            .unwrap_or(q.len());
+        q[qs..]
+            .trim_matches(|c| c == '"' || c == '`')
+            .to_lowercase()
+    });
+    let mut out = vec![];
+    let col = |name: &str, ty: &str, table: &str| Suggestion {
+        label: name.to_string(),
+        kind: Kind::Column,
+        detail: format!("{ty} · {table}"),
+    };
+    if let Some(q) = qualifier {
+        // alias.col / table.col
+        let table = aliases(text).get(&q).cloned().unwrap_or(q);
+        for (name, ty) in catalog
+            .columns
+            .get(&table.to_lowercase())
+            .into_iter()
+            .flatten()
+        {
+            if name.to_lowercase().starts_with(&prefix) {
+                out.push(col(name, ty, &table));
+            }
+        }
+        return (start, out);
+    }
+    if prefix.is_empty() {
+        return (start, out);
+    }
+    for k in KEYWORDS
+        .iter()
+        .filter(|k| k.to_lowercase().starts_with(&prefix))
+    {
+        out.push(Suggestion {
+            label: k.to_string(),
+            kind: Kind::Keyword,
+            detail: "keyword".into(),
+        });
+    }
+    for t in catalog.tables.iter().filter(|t| {
+        t.to_lowercase().starts_with(&prefix)
+            || t.split_once('.')
+                .is_some_and(|(_, b)| b.to_lowercase().starts_with(&prefix))
+    }) {
+        out.push(Suggestion {
+            label: t.clone(),
+            kind: Kind::Table,
+            detail: "table".into(),
+        });
+    }
+    // Columns of the tables this statement uses first, then everything else.
+    let used: Vec<String> = aliases(text)
+        .into_values()
+        .map(|t| t.to_lowercase())
+        .collect();
+    let mut seen = std::collections::HashSet::new();
+    let mut tables: Vec<(&String, &Vec<(String, String)>)> = catalog.columns.iter().collect();
+    tables.sort_by_key(|(t, _)| (!used.contains(t), (*t).clone()));
+    for (table, cols) in tables {
+        for (name, ty) in cols {
+            if name.to_lowercase().starts_with(&prefix) && seen.insert(name.to_lowercase()) {
+                out.push(col(name, ty, table));
+            }
+        }
+    }
+    (start, out)
+}
+
+pub struct SqlCompletion {
+    pub catalog: SharedCatalog,
+}
+
+impl CompletionProvider for SqlCompletion {
+    fn completions(
+        &self,
+        rope: &Rope,
+        offset: usize,
+        _: CompletionContext,
+        _: &mut Window,
+        _: &mut App,
+    ) -> Task<anyhow::Result<CompletionResponse>> {
+        let text = rope.to_string();
+        let (start, items) = suggest(&text, offset, &self.catalog.lock().unwrap());
+        let range = lsp_types::Range {
+            start: rope.offset_to_position(start),
+            end: rope.offset_to_position(offset),
+        };
+        let items = items
+            .into_iter()
+            .take(100)
+            .map(|s| CompletionItem {
+                label: s.label.clone(),
+                kind: Some(match s.kind {
+                    Kind::Keyword => CompletionItemKind::KEYWORD,
+                    Kind::Table => CompletionItemKind::CLASS,
+                    Kind::Column => CompletionItemKind::FIELD,
+                }),
+                detail: Some(s.detail),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                    range,
+                    new_text: s.label,
+                })),
+                ..Default::default()
+            })
+            .collect();
+        Task::ready(Ok(CompletionResponse::Array(items)))
+    }
+
+    fn is_completion_trigger(&self, _: usize, new_text: &str, _: &mut App) -> bool {
+        new_text
+            .chars()
+            .last()
+            .is_some_and(|c| is_word(c) || c == '.')
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Catalog, Kind, suggest};
+
+    fn catalog() -> Catalog {
+        let mut c = Catalog {
+            tables: vec!["beavers".into(), "lodges".into(), "public.dams".into()],
+            ..Default::default()
+        };
+        c.set_columns(
+            "beavers",
+            vec![
+                ("name".into(), "TEXT".into()),
+                ("lodge_id".into(), "INT".into()),
+            ],
+        );
+        c.set_columns(
+            "lodges",
+            vec![
+                ("name".into(), "TEXT".into()),
+                ("river".into(), "TEXT".into()),
+            ],
+        );
+        c.set_columns("public.dams", vec![("height".into(), "numeric".into())]);
+        c
+    }
+
+    #[test]
+    fn offsets_inside_characters_are_safe() {
+        let c = catalog();
+        let text = "SELECT 'ä' FROM be";
+        for offset in 0..text.len() + 3 {
+            suggest(text, offset, &c);
+        }
+    }
+
+    #[test]
+    fn keywords_tables_and_columns() {
+        let c = catalog();
+        let (start, s) = suggest("SEL", 3, &c);
+        assert_eq!(
+            (start, s[0].label.as_str(), s[0].kind),
+            (0, "SELECT", Kind::Keyword)
+        );
+        let (_, s) = suggest("SELECT * FROM lo", 16, &c);
+        assert!(
+            s.iter()
+                .any(|x| x.label == "lodges" && x.kind == Kind::Table)
+        );
+        let (_, s) = suggest("SELECT * FROM da", 16, &c);
+        assert!(s.iter().any(|x| x.label == "public.dams"));
+    }
+
+    #[test]
+    fn alias_dot_offers_that_tables_columns() {
+        let c = catalog();
+        let text = "SELECT l. FROM beavers b JOIN lodges AS l ON l.id = b.lodge_id";
+        let (start, s) = suggest(text, 9, &c);
+        assert_eq!(start, 9);
+        assert_eq!(
+            s.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(),
+            ["name", "river"]
+        );
+        let (_, s) = suggest("SELECT beavers.lo FROM beavers", 17, &c);
+        assert_eq!(s.len(), 1);
+        assert_eq!(s[0].label, "lodge_id");
+        // Unqualified: columns of the statement's tables come first.
+        let (_, s) = suggest("SELECT ri FROM lodges", 9, &c);
+        assert_eq!(s[0].label, "river");
+        let (_, s) = suggest("SELECT dams.h FROM public.dams", 13, &c);
+        assert_eq!(s[0].label, "height");
+    }
+}

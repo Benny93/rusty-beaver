@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rusty Beaver: a database tool your AI agent can drive</title>
+  <meta name="description" content="A DBeaver-style database tool written in Rust with GPUI. SQLite, PostgreSQL and MySQL, with a built-in MCP server so AI agents can drive the UI.">
+  <meta property="og:title" content="Rusty Beaver">
+  <meta property="og:description" content="A DBeaver-style database tool in Rust + GPUI, with a built-in MCP server for AI agents.">
+  <meta property="og:image" content="assets/screenshots/07-sql-editor.png">
+  <link rel="icon" type="image/png" href="assets/favicon.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="nav">
+    <a class="brand" href="#top"><img src="assets/icon.png" alt="" width="32" height="32"> Rusty Beaver</a>
+    <nav>
+      <a href="#features">Features</a>
+      <a href="#agents">For agents</a>
+      <a href="#screenshots">Screenshots</a>
+      <a href="#start">Get started</a>
+      <a href="#play">Play</a>
+      <a class="repo-link" hidden>GitHub</a>
+    </nav>
+  </header>
+
+  <main id="top">
+    <section class="hero">
+      <img class="hero-sprite" src="assets/splash.png" alt="Pixel-art beaver soldier hugging a database" width="256" height="256">
+      <div class="hero-text">
+        <h1>RUSTY BEAVER</h1>
+        <p class="tagline">A DBeaver-style database tool written in Rust with GPUI, that your AI agent can drive.</p>
+        <p class="sub">SQLite, PostgreSQL and MySQL. A native, fast desktop app with a built-in <abbr title="Model Context Protocol">MCP</abbr> server: agents work the same window you look at, with no simulated mouse clicks.</p>
+        <div class="cta">
+          <a class="btn primary" href="#start">Get started</a>
+          <a class="btn" href="#tour">See it in action</a>
+        </div>
+        <ul class="badges" aria-label="Platforms and databases">
+          <li>macOS</li><li>Linux</li><li>Windows</li><li>SQLite</li><li>PostgreSQL</li><li>MySQL</li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="tour" class="tour">
+      <div class="screen">
+        <div class="screen-bar"><span></span><span></span><span></span></div>
+        <img src="assets/tour.gif" width="1100" height="777" alt="Animated tour: navigator, ER diagram, grid editing, SQL editor, charts, parameters, history, multiple databases" loading="lazy">
+      </div>
+      <p class="caption">An AI agent drove every step of this tour through the MCP server.</p>
+    </section>
+
+    <section id="features">
+      <h2>Mission briefing</h2>
+      <div class="grid">
+        <article class="card">
+          <h3>SQL editor</h3>
+          <p>Highlighting, autocompletion of tables and columns (including after an alias like <code>b.</code>), and the statement under the cursor runs with one key. Scripts give one result per statement. Format, Explain and Cancel are one key away.</p>
+        </article>
+        <article class="card">
+          <h3>Edit data in the grid</h3>
+          <p>Change cells, add, duplicate and delete rows, set NULL. Changes stay highlighted until you save, and then go in as one transaction, keyed on the primary key: all of them or none.</p>
+        </article>
+        <article class="card">
+          <h3>ER diagrams</h3>
+          <p>Tables, keys and foreign-key links, laid out automatically. Drag the boxes around, and double-click one to open its data.</p>
+        </article>
+        <article class="card">
+          <h3>Many ways to look at a result</h3>
+          <p>A sortable grid, a record form, aligned text, bar charts, and a value panel that pretty-prints JSON and shows column statistics. Search narrows the rows.</p>
+        </article>
+        <article class="card">
+          <h3>Table explorer</h3>
+          <p>WHERE filters, filter by a cell's value, follow a foreign key to the referenced row, 200 rows per page with a total count, and the table's columns and DDL.</p>
+        </article>
+        <article class="card">
+          <h3>Production safety</h3>
+          <p>Mark a connection as production and changes ask before they run. Read-only connections refuse them. In manual-commit mode, Commit and Rollback live in the toolbar.</p>
+        </article>
+        <article class="card">
+          <h3>Query parameters</h3>
+          <p>Write <code>:rank</code> in the SQL, and the editor asks for the value before running it, remembering what you entered last time.</p>
+        </article>
+        <article class="card">
+          <h3>History and sessions</h3>
+          <p>Every statement goes into a searchable history. Open scripts, tables and diagrams come back after a restart.</p>
+        </article>
+        <article class="card">
+          <h3>Import and export</h3>
+          <p>CSV import as one transaction. Export to CSV, TSV, JSON, Markdown, plain text or INSERT statements, or copy a column as an <code>IN (…)</code> list.</p>
+        </article>
+        <article class="card">
+          <h3>Keeps the connection</h3>
+          <p>If the database restarts, Rusty Beaver reconnects and retries the statement. Cancel stops a long query on any of the three databases.</p>
+        </article>
+        <article class="card">
+          <h3>Native and small</h3>
+          <p>Built on GPUI, the GPU-accelerated UI framework behind the Zed editor. One binary per platform, dark and light themes, a splash screen, and a pixel-art beaver.</p>
+        </article>
+        <article class="card">
+          <h3>Agent-ready</h3>
+          <p>54 MCP tools cover everything above. Agents read structured results and can take screenshots of what the user sees.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="agents" class="agents">
+      <h2>Built for AI agents</h2>
+      <div class="two-col">
+        <div>
+          <p>The running app serves MCP over streamable HTTP, on <code>127.0.0.1</code> only. Each tool is a semantic command: <em>connect</em>, <em>open a table</em>, <em>edit a cell</em>, <em>run SQL</em>. It changes what the user sees and returns structured data, so the agent and the user always look at the same thing.</p>
+          <p>Safety is built in. On production connections, an agent has to pass <code>confirm: true</code> before changing data. Read-only connections refuse changes outright.</p>
+          <pre><code><span class="c"># Claude Code</span>
+claude mcp add --transport http rusty-beaver http://127.0.0.1:7878/mcp</code></pre>
+          <pre><code><span class="c"># or try it from a terminal</span>
+python3 scripts/mcp.py run_sql '{"connection": "Beaver Demo (SQLite)",
+  "sql": "SELECT name FROM beavers WHERE logs_chewed > :min",
+  "params": {"min": "5000"}}'</code></pre>
+        </div>
+        <div class="tools">
+          <h3>54 tools</h3>
+          <dl>
+            <dt>See</dt><dd>get_state · screenshot</dd>
+            <dt>Connections</dt><dd>test_connection · add · edit · delete · connect · disconnect · refresh · list_tables</dd>
+            <dt>Schema</dt><dd>describe_table · open_er_diagram · generate_sql · row_counts</dd>
+            <dt>SQL</dt><dd>run_sql · execute_editor · set_sql · explain · format_sql · cancel_query · sql_completions · open / save_script</dd>
+            <dt>Results</dt><dd>get_results · sort · search · chart · record_view · results_as_text · show_value · export</dd>
+            <dt>Table data</dt><dd>open_table · set_filter · load_more · edit_cell · add / duplicate / delete_row · save / revert_changes · open_referenced_row · import_csv</dd>
+            <dt>Transactions</dt><dd>set_auto_commit · commit · rollback</dd>
+            <dt>UI</dt><dd>tabs · sidebar · history · theme · dialogs</dd>
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    <section id="screenshots">
+      <h2>Field photos</h2>
+      <div class="gallery">
+        <figure><img src="assets/screenshots/02-navigator.png" width="1360" height="892" alt="" loading="lazy"><figcaption>Database Navigator with keys and foreign keys</figcaption></figure>
+        <figure><img src="assets/screenshots/03-er-diagram.png" width="1360" height="892" alt="" loading="lazy"><figcaption>ER diagram</figcaption></figure>
+        <figure><img src="assets/screenshots/04-edit-data.png" width="1360" height="892" alt="" loading="lazy"><figcaption>Editing data: changed, added and deleted rows</figcaption></figure>
+        <figure><img src="assets/screenshots/07-sql-editor.png" width="1360" height="892" alt="" loading="lazy"><figcaption>SQL editor and result grid</figcaption></figure>
+        <figure><img src="assets/screenshots/08-chart.png" width="1360" height="892" alt="" loading="lazy"><figcaption>Any result as a bar chart</figcaption></figure>
+        <figure><img src="assets/screenshots/10-value-panel.png" width="1360" height="892" alt="" loading="lazy"><figcaption>Value panel with JSON and column statistics</figcaption></figure>
+        <figure><img src="assets/screenshots/09-scripts.png" width="1360" height="892" alt="" loading="lazy"><figcaption>Scripts: one result per statement</figcaption></figure>
+        <figure><img src="assets/screenshots/11-parameters.png" width="1360" height="892" alt="" loading="lazy"><figcaption>Query parameters</figcaption></figure>
+        <figure><img src="assets/screenshots/14-history.png" width="1360" height="892" alt="" loading="lazy"><figcaption>Query history</figcaption></figure>
+        <figure><img src="assets/screenshots/16-multi-database.png" width="1360" height="892" alt="" loading="lazy"><figcaption>SQLite, PostgreSQL and MySQL side by side</figcaption></figure>
+        <figure><img src="assets/screenshots/18-production.png" width="1360" height="892" alt="" loading="lazy"><figcaption>A production connection</figcaption></figure>
+        <figure><img src="assets/screenshots/17-light-theme.png" width="1360" height="892" alt="" loading="lazy"><figcaption>Light theme</figcaption></figure>
+      </div>
+    </section>
+
+    <section id="play" class="play">
+      <h2>Bonus level</h2>
+      <p class="lead">The bugs got into the server room. Drop dynamite, blast the log crates and squash every SQL bug. Power-ups under the crates give you more dynamite and bigger blasts.</p>
+      <div id="beaver-bomber" class="bomber" tabindex="0" aria-label="Beaver Bomber game. Arrow keys or WASD move, Space drops dynamite, P pauses.">
+        <div class="hud" aria-live="polite"></div>
+        <div class="board">
+          <canvas width="240" height="176" aria-hidden="true"></canvas>
+          <div class="overlay" role="button"></div>
+        </div>
+        <div class="pad" aria-hidden="true">
+          <button data-dir="up" class="up">▲</button>
+          <button data-dir="left" class="left">◀</button>
+          <button data-dir="right" class="right">▶</button>
+          <button data-dir="down" class="down">▼</button>
+          <button data-action="bomb" class="boom">BOOM</button>
+        </div>
+        <p class="keys-help"><kbd>←</kbd><kbd>↑</kbd><kbd>↓</kbd><kbd>→</kbd> or <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move · <kbd>Space</kbd> dynamite · <kbd>P</kbd> pause</p>
+      </div>
+    </section>
+
+    <section id="start" class="start">
+      <h2>Get started</h2>
+      <div class="two-col">
+        <div>
+          <h3>Build and run</h3>
+          <p>You need a Rust toolchain, plus a few system libraries on Linux (listed in the README).</p>
+          <pre><code>make run          <span class="c"># optimized build, opens the app</span>
+make dev          <span class="c"># debug build</span>
+make test smoke   <span class="c"># unit tests + an end-to-end check over MCP</span>
+make bundle       <span class="c"># macOS .app with icon</span>
+make help         <span class="c"># everything else</span></code></pre>
+          <p>On first start, a demo SQLite database (beavers, lodges, missions) is created, so there's something to explore right away.</p>
+        </div>
+        <div>
+          <h3>Keys to remember</h3>
+          <table class="keys">
+            <tr><td><kbd>Mod</kbd>+<kbd>Enter</kbd></td><td>Run the statement at the cursor</td></tr>
+            <tr><td><kbd>Mod</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd></td><td>Run the whole script</td></tr>
+            <tr><td><kbd>Mod</kbd>+<kbd>.</kbd></td><td>Cancel the query</td></tr>
+            <tr><td><kbd>Mod</kbd>+<kbd>Shift</kbd>+<kbd>F</kbd></td><td>Format SQL</td></tr>
+            <tr><td><kbd>F2</kbd></td><td>Edit a cell</td></tr>
+            <tr><td><kbd>Mod</kbd>+<kbd>S</kbd></td><td>Save the script or the grid changes</td></tr>
+            <tr><td><kbd>F1</kbd></td><td>All shortcuts</td></tr>
+          </table>
+          <p class="note">Mod is Cmd on macOS and Ctrl on Linux and Windows.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <img src="assets/icon.png" alt="" width="40" height="40">
+    <p>Rusty Beaver · Built with Rust and <a href="https://gpui.rs/">GPUI</a> · MIT licensed</p>
+    <p class="fine">DBeaver is a trademark of its respective owner. Rusty Beaver is an independent project and is not affiliated with it.</p>
+  </footer>
+
+  <dialog id="lightbox" aria-label="Screenshot">
+    <form method="dialog"><button aria-label="Close">✕</button></form>
+    <img alt="">
+    <p></p>
+  </dialog>
+
+  <script src="game.js"></script>
+  <script>
+    // Screenshot lightbox.
+    const box = document.getElementById('lightbox');
+    document.querySelectorAll('.gallery figure').forEach(f => f.addEventListener('click', () => {
+      box.querySelector('img').src = f.querySelector('img').src;
+      box.querySelector('p').textContent = f.querySelector('figcaption').textContent;
+      box.showModal();
+    }));
+    box.addEventListener('click', e => { if (e.target === box) box.close(); });
+
+    // Link to the repository when served from GitHub Pages (owner.github.io/repo/).
+    const host = location.hostname;
+    if (host.endsWith('.github.io')) {
+      const owner = host.split('.')[0];
+      const repo = location.pathname.split('/').filter(Boolean)[0];
+      const link = document.querySelector('.repo-link');
+      link.href = `https://github.com/${owner}/${repo || owner + '.github.io'}`;
+      link.hidden = false;
+    }
+  </script>
+</body>
+</html>

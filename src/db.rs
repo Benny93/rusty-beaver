@@ -1,0 +1,1567 @@
+//! Database drivers (SQLite, PostgreSQL, MySQL) behind one tiny text-only API.
+//! Every value comes back as display text, so the grid, CSV export and MCP all share one shape.
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Driver {
+    Sqlite,
+    Postgres,
+    Mysql,
+}
+
+impl Driver {
+    pub const ALL: [Driver; 3] = [Driver::Sqlite, Driver::Postgres, Driver::Mysql];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Driver::Sqlite => "SQLite",
+            Driver::Postgres => "PostgreSQL",
+            Driver::Mysql => "MySQL",
+        }
+    }
+
+    pub fn default_port(self) -> u16 {
+        match self {
+            Driver::Sqlite => 0,
+            Driver::Postgres => 5432,
+            Driver::Mysql => 3306,
+        }
+    }
+
+    /// An identifier quoted for this dialect.
+    pub fn quote(self, ident: &str) -> String {
+        match self {
+            Driver::Mysql => format!("`{}`", ident.replace('`', "``")),
+            _ => format!("\"{}\"", ident.replace('"', "\"\"")),
+        }
+    }
+
+    /// A table name as SQL; Postgres names come back schema-qualified ("public.users").
+    pub fn table_ref(self, table: &str) -> String {
+        match (self, table.split_once('.')) {
+            (Driver::Postgres, Some((schema, t))) => {
+                format!("{}.{}", self.quote(schema), self.quote(t))
+            }
+            _ => self.quote(table),
+        }
+    }
+
+    /// `SELECT * FROM <table> [WHERE <filter>] LIMIT n`, as the table editor runs it.
+    pub fn select_all(self, table: &str, filter: &str, limit: usize) -> String {
+        let filter = filter.trim();
+        let filter = if filter.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {filter}")
+        };
+        format!(
+            "SELECT * FROM {}{filter} LIMIT {limit};",
+            self.table_ref(table)
+        )
+    }
+
+    /// Statement returning a table's DDL in its first row, last column (where the server has one).
+    fn ddl_sql(self, table: &str) -> Option<String> {
+        match self {
+            Driver::Sqlite => Some(format!(
+                "SELECT sql FROM sqlite_master WHERE name = {}",
+                literal(table)
+            )),
+            Driver::Mysql => Some(format!("SHOW CREATE TABLE {}", self.quote(table))),
+            Driver::Postgres => None,
+        }
+    }
+
+    /// Query listing tables and views: rows of (name, kind).
+    fn tables_sql(self) -> &'static str {
+        match self {
+            Driver::Sqlite => {
+                "SELECT name, upper(type) FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            }
+            Driver::Postgres => {
+                "SELECT table_schema || '.' || table_name, CASE table_type WHEN 'BASE TABLE' THEN 'TABLE' ELSE table_type END FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema') ORDER BY 1"
+            }
+            Driver::Mysql => {
+                "SELECT table_name, CASE table_type WHEN 'BASE TABLE' THEN 'TABLE' ELSE table_type END FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY 1"
+            }
+        }
+    }
+
+    /// Every foreign key of the schema: rows of (table, column, referenced table, referenced column).
+    fn foreign_keys_sql(self) -> &'static str {
+        match self {
+            Driver::Sqlite => {
+                "SELECT m.name, p.\"from\", p.\"table\", coalesce(p.\"to\", '') FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) p WHERE m.type = 'table' ORDER BY 1"
+            }
+            Driver::Postgres => {
+                "SELECT tc.table_schema || '.' || tc.table_name, kcu.column_name, ccu.table_schema || '.' || ccu.table_name, ccu.column_name \
+                FROM information_schema.table_constraints tc \
+                JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema \
+                JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.constraint_schema = tc.table_schema \
+                WHERE tc.constraint_type = 'FOREIGN KEY' ORDER BY 1"
+            }
+            Driver::Mysql => {
+                "SELECT table_name, column_name, referenced_table_name, referenced_column_name FROM information_schema.key_column_usage \
+                WHERE table_schema = DATABASE() AND referenced_table_name IS NOT NULL ORDER BY 1"
+            }
+        }
+    }
+
+    /// Query describing a table's columns: rows of (name, type, nullable, key).
+    fn columns_sql(self, table: &str) -> String {
+        let lit = |s: &str| format!("'{}'", s.replace('\'', "''"));
+        match self {
+            Driver::Sqlite => format!(
+                "SELECT name, type, CASE \"notnull\" WHEN 1 THEN 'NO' ELSE 'YES' END, CASE WHEN pk > 0 THEN 'PK' ELSE '' END FROM pragma_table_info({})",
+                lit(table)
+            ),
+            Driver::Postgres => {
+                let (schema, t) = table.split_once('.').unwrap_or(("public", table));
+                format!(
+                    "SELECT c.column_name, c.data_type, c.is_nullable, CASE WHEN k.column_name IS NOT NULL THEN 'PK' ELSE '' END \
+                     FROM information_schema.columns c LEFT JOIN (SELECT ku.column_name FROM information_schema.table_constraints tc \
+                     JOIN information_schema.key_column_usage ku ON tc.constraint_name = ku.constraint_name AND tc.table_schema = ku.table_schema \
+                     WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = {s} AND tc.table_name = {t}) k ON k.column_name = c.column_name \
+                     WHERE c.table_schema = {s} AND c.table_name = {t} ORDER BY c.ordinal_position",
+                    s = lit(schema),
+                    t = lit(t)
+                )
+            }
+            Driver::Mysql => format!(
+                "SELECT column_name, column_type, is_nullable, IF(column_key = 'PRI', 'PK', '') FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = {} ORDER BY ordinal_position",
+                lit(table)
+            ),
+        }
+    }
+}
+
+/// A string as an SQL literal; None is NULL. Servers coerce '42' to numbers and dates.
+pub fn literal_opt(v: Option<&str>) -> String {
+    v.map(literal).unwrap_or_else(|| "NULL".into())
+}
+
+pub fn literal(v: &str) -> String {
+    format!("'{}'", v.replace('\'', "''"))
+}
+
+/// Pending grid edits of a table editor, by original row index.
+#[derive(Default, Clone, Debug)]
+pub struct Changes {
+    /// (row, column) -> new value; None = NULL.
+    pub cells: std::collections::BTreeMap<(usize, usize), Option<String>>,
+    pub deleted: std::collections::BTreeSet<usize>,
+    /// Rows added in the grid (not in the database yet).
+    pub inserted: std::collections::BTreeSet<usize>,
+}
+
+impl Changes {
+    pub fn count(&self) -> usize {
+        let edited_rows: std::collections::BTreeSet<usize> = self
+            .cells
+            .keys()
+            .map(|k| k.0)
+            .filter(|r| !self.deleted.contains(r) && !self.inserted.contains(r))
+            .collect();
+        edited_rows.len()
+            + self.deleted.len()
+            + self
+                .inserted
+                .iter()
+                .filter(|r| !self.deleted.contains(r))
+                .count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count() == 0
+    }
+
+    /// The INSERT / UPDATE / DELETE statements that save these changes. Existing rows are
+    /// found by their primary key (`key` = column indexes), with the values as loaded.
+    pub fn to_sql(
+        &self,
+        driver: Driver,
+        table: &str,
+        columns: &[String],
+        rows: &[Vec<String>],
+        key: &[usize],
+    ) -> Result<Vec<String>, String> {
+        let t = driver.table_ref(table);
+        let q = |c: usize| driver.quote(&columns[c]);
+        let where_key = |row: usize| {
+            key.iter()
+                .map(|&c| match rows[row][c].as_str() {
+                    "NULL" => format!("{} IS NULL", q(c)),
+                    v => format!("{} = {}", q(c), literal(v)),
+                })
+                .collect::<Vec<_>>()
+                .join(" AND ")
+        };
+        if key.is_empty() && self.cells.keys().any(|k| !self.inserted.contains(&k.0))
+            || key.is_empty() && !self.deleted.is_empty()
+        {
+            return Err(
+                "this table has no primary key, so rows cannot be changed from the grid; use SQL"
+                    .into(),
+            );
+        }
+        let mut out = vec![];
+        for &row in &self.deleted {
+            if !self.inserted.contains(&row) {
+                out.push(format!("DELETE FROM {t} WHERE {};", where_key(row)));
+            }
+        }
+        let mut by_row: std::collections::BTreeMap<usize, Vec<(usize, &Option<String>)>> =
+            Default::default();
+        for ((row, col), v) in &self.cells {
+            if !self.deleted.contains(row) {
+                by_row.entry(*row).or_default().push((*col, v));
+            }
+        }
+        for &row in self.inserted.iter().filter(|r| !self.deleted.contains(r)) {
+            let cells = by_row.remove(&row).unwrap_or_default();
+            if cells.is_empty() {
+                out.push(if driver == Driver::Mysql {
+                    format!("INSERT INTO {t} () VALUES ();")
+                } else {
+                    format!("INSERT INTO {t} DEFAULT VALUES;")
+                });
+            } else {
+                let cols = cells
+                    .iter()
+                    .map(|(c, _)| q(*c))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let vals = cells
+                    .iter()
+                    .map(|(_, v)| literal_opt(v.as_deref()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                out.push(format!("INSERT INTO {t} ({cols}) VALUES ({vals});"));
+            }
+        }
+        for (row, cells) in by_row {
+            let set = cells
+                .iter()
+                .map(|(c, v)| format!("{} = {}", q(*c), literal_opt(v.as_deref())))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push(format!("UPDATE {t} SET {set} WHERE {};", where_key(row)));
+        }
+        Ok(out)
+    }
+}
+
+/// A saved connection, as in DBeaver's Database Navigator.
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct ConnConfig {
+    pub name: String,
+    pub driver: Driver,
+    /// Host name (PostgreSQL / MySQL).
+    #[serde(default)]
+    pub host: String,
+    #[serde(default)]
+    pub port: u16,
+    /// Database name, or the file path for SQLite.
+    #[serde(default)]
+    pub database: String,
+    #[serde(default)]
+    pub user: String,
+    // ponytail: stored in plain text like DBeaver's default; OS keychain when it matters
+    #[serde(default)]
+    pub password: String,
+    /// Statements run in a transaction that stays open until Commit / Rollback.
+    #[serde(default)]
+    pub manual_commit: bool,
+    /// A production database: shown in red, and changing data asks for confirmation.
+    #[serde(default)]
+    pub production: bool,
+    /// Refuse every statement that changes data or schema.
+    #[serde(default)]
+    pub read_only: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct QueryResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    /// Rows changed by the last statement without a result set.
+    pub affected: Option<u64>,
+    #[serde(skip)]
+    pub elapsed: Duration,
+    /// More rows existed than `MAX_ROWS`.
+    pub truncated: bool,
+}
+
+/// Rows kept per result set; the grid is virtual, but memory isn't free.
+pub const MAX_ROWS: usize = 10_000;
+
+pub enum Session {
+    Sqlite(rusqlite::Connection),
+    Postgres(postgres::Client),
+    Mysql(mysql::Conn),
+}
+
+pub fn connect(c: &ConnConfig) -> Result<Session, String> {
+    let e = |e: &dyn std::fmt::Display| e.to_string();
+    Ok(match c.driver {
+        Driver::Sqlite => {
+            Session::Sqlite(rusqlite::Connection::open(&c.database).map_err(|x| e(&x))?)
+        }
+        Driver::Postgres => {
+            let mut cfg = postgres::Config::new();
+            cfg.host(if c.host.is_empty() {
+                "localhost"
+            } else {
+                &c.host
+            })
+            .port(if c.port == 0 { 5432 } else { c.port })
+            .user(&c.user)
+            .password(&c.password)
+            .dbname(&c.database)
+            .connect_timeout(Duration::from_secs(10));
+            // ponytail: no TLS; add postgres-native-tls when remote servers need it
+            Session::Postgres(cfg.connect(postgres::NoTls).map_err(pg_err)?)
+        }
+        Driver::Mysql => {
+            let opts = mysql::OptsBuilder::new()
+                .ip_or_hostname(Some(if c.host.is_empty() {
+                    "localhost"
+                } else {
+                    &c.host
+                }))
+                .tcp_port(if c.port == 0 { 3306 } else { c.port })
+                .user(Some(&c.user))
+                .pass(Some(&c.password))
+                .db_name((!c.database.is_empty()).then_some(&c.database))
+                .tcp_connect_timeout(Some(Duration::from_secs(10)));
+            Session::Mysql(mysql::Conn::new(opts).map_err(|x| e(&x))?)
+        }
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct ForeignKey {
+    pub table: String,
+    pub column: String,
+    pub ref_table: String,
+    /// Empty when SQLite's REFERENCES names no column (the primary key is meant).
+    pub ref_column: String,
+}
+
+/// Stops the statement a session is running, from another thread.
+pub enum Canceller {
+    Sqlite(rusqlite::InterruptHandle),
+    Postgres(postgres::CancelToken),
+    /// MySQL has no out-of-band cancel: a second connection runs `KILL QUERY <id>`.
+    Mysql(ConnConfig, u32),
+}
+
+impl Canceller {
+    pub fn cancel(&self) -> Result<(), String> {
+        match self {
+            Canceller::Sqlite(h) => {
+                h.interrupt();
+                Ok(())
+            }
+            Canceller::Postgres(t) => t.cancel_query(postgres::NoTls).map_err(|e| e.to_string()),
+            Canceller::Mysql(cfg, id) => {
+                connect(cfg)?.query(&format!("KILL QUERY {id}")).map(|_| ())
+            }
+        }
+    }
+}
+
+impl Session {
+    pub fn canceller(&self, cfg: &ConnConfig) -> Canceller {
+        match self {
+            Session::Sqlite(c) => Canceller::Sqlite(c.get_interrupt_handle()),
+            Session::Postgres(c) => Canceller::Postgres(c.cancel_token()),
+            Session::Mysql(c) => Canceller::Mysql(cfg.clone(), c.connection_id()),
+        }
+    }
+
+    /// Run one or more statements; the last result set (or affected count) is returned.
+    pub fn query(&mut self, sql: &str) -> Result<QueryResult, String> {
+        Ok(self.query_all(sql)?.pop().unwrap_or_default())
+    }
+
+    /// Every result of a script: one per statement (rows, or the count of changed rows).
+    /// Each carries the time of the whole script.
+    pub fn query_all(&mut self, sql: &str) -> Result<Vec<QueryResult>, String> {
+        let start = Instant::now();
+        let mut v = match self {
+            Session::Sqlite(c) => sqlite_query(c, sql),
+            Session::Postgres(c) => pg_query(c, sql),
+            Session::Mysql(c) => mysql_query(c, sql),
+        }?;
+        for r in &mut v {
+            r.elapsed = start.elapsed();
+        }
+        Ok(v)
+    }
+
+    fn driver(&self) -> Driver {
+        match self {
+            Session::Sqlite(_) => Driver::Sqlite,
+            Session::Postgres(_) => Driver::Postgres,
+            Session::Mysql(_) => Driver::Mysql,
+        }
+    }
+
+    /// (name, TABLE|VIEW) pairs.
+    pub fn tables(&mut self) -> Result<Vec<(String, String)>, String> {
+        let r = self.query(self.driver().tables_sql())?;
+        Ok(r.rows
+            .into_iter()
+            .map(|mut row| (std::mem::take(&mut row[0]), std::mem::take(&mut row[1])))
+            .collect())
+    }
+
+    /// CREATE statement of a table or view.
+    pub fn ddl(&mut self, table: &str) -> Result<String, String> {
+        let driver = self.driver();
+        if let Some(sql) = driver.ddl_sql(table) {
+            let r = self.query(&sql)?;
+            if let Some(v) = r.rows.first().and_then(|row| row.last()) {
+                return Ok(format!("{v};"));
+            }
+        }
+        // Postgres has no SHOW CREATE: rebuild it from the columns.
+        let cols = self.columns(table)?;
+        let mut lines: Vec<String> = cols
+            .rows
+            .iter()
+            .map(|c| {
+                format!(
+                    "    {} {}{}",
+                    driver.quote(&c[0]),
+                    c[1],
+                    if c[2] == "NO" { " NOT NULL" } else { "" }
+                )
+            })
+            .collect();
+        let pk: Vec<String> = cols
+            .rows
+            .iter()
+            .filter(|c| c[3] == "PK")
+            .map(|c| driver.quote(&c[0]))
+            .collect();
+        if !pk.is_empty() {
+            lines.push(format!("    PRIMARY KEY ({})", pk.join(", ")));
+        }
+        Ok(format!(
+            "CREATE TABLE {} (\n{}\n);",
+            driver.table_ref(table),
+            lines.join(",\n")
+        ))
+    }
+
+    /// "PostgreSQL 17.6", "MySQL 8.4.2", "SQLite 3.50.1".
+    pub fn server_version(&mut self) -> String {
+        let sql = match self.driver() {
+            Driver::Sqlite => "SELECT 'SQLite ' || sqlite_version()",
+            Driver::Postgres => "SELECT 'PostgreSQL ' || current_setting('server_version')",
+            Driver::Mysql => "SELECT CONCAT('MySQL ', VERSION())",
+        };
+        self.query(sql)
+            .ok()
+            .and_then(|r| r.rows.first()?.first().cloned())
+            .map(|v| v.split(" (").next().unwrap_or(&v).to_string())
+            .unwrap_or_default()
+    }
+
+    /// After an error: is the connection itself gone (server restart, network)?
+    pub fn is_broken(&mut self) -> bool {
+        match self {
+            Session::Sqlite(_) => false,
+            Session::Postgres(c) => c.is_closed(),
+            Session::Mysql(c) => c.ping().is_err(),
+        }
+    }
+
+    pub fn begin(&mut self) -> Result<(), String> {
+        let begin = if self.driver() == Driver::Mysql {
+            "START TRANSACTION"
+        } else {
+            "BEGIN"
+        };
+        self.query(begin).map(|_| ())
+    }
+
+    /// Run statements as one transaction: all of them or none. Inside a transaction the
+    /// user opened (manual commit, `own_tx` false) they just run; committing is up to them.
+    pub fn apply_in(&mut self, statements: &[String], own_tx: bool) -> Result<QueryResult, String> {
+        if !own_tx {
+            let mut affected = 0;
+            for s in statements {
+                affected += self
+                    .query(s)
+                    .map_err(|e| format!("{e}\n(in: {s})"))?
+                    .affected
+                    .unwrap_or(0);
+            }
+            return Ok(QueryResult {
+                affected: Some(affected),
+                ..Default::default()
+            });
+        }
+        self.apply(statements)
+    }
+
+    /// Run statements as one transaction: all of them or none.
+    pub fn apply(&mut self, statements: &[String]) -> Result<QueryResult, String> {
+        self.begin()?;
+        let mut affected = 0;
+        for s in statements {
+            match self.query(s) {
+                Ok(r) => affected += r.affected.unwrap_or(0),
+                Err(e) => {
+                    let _ = self.query("ROLLBACK");
+                    return Err(format!("{e}\n(rolled back: {s})"));
+                }
+            }
+        }
+        self.query("COMMIT")?;
+        Ok(QueryResult {
+            affected: Some(affected),
+            ..Default::default()
+        })
+    }
+
+    /// Columns of a table: name, type, nullable, key.
+    /// Columns of a table: name, type, nullable, key, and what a foreign key references.
+    pub fn columns(&mut self, table: &str) -> Result<QueryResult, String> {
+        let mut r = self.query(&self.driver().columns_sql(table))?;
+        r.columns = ["Column", "Type", "Nullable", "Key", "References"]
+            .map(String::from)
+            .to_vec();
+        let fks: Vec<ForeignKey> = self
+            .foreign_keys()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|f| f.table == table)
+            .collect();
+        for row in &mut r.rows {
+            let refs = fks
+                .iter()
+                .filter(|f| f.column == row[0])
+                .map(|f| {
+                    if f.ref_column.is_empty() {
+                        f.ref_table.clone()
+                    } else {
+                        format!("{}.{}", f.ref_table, f.ref_column)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            if !refs.is_empty() && row[3].is_empty() {
+                row[3] = "FK".into();
+            }
+            row.push(refs);
+        }
+        Ok(r)
+    }
+
+    /// Tables (at most `limit`) with their columns, and every foreign key: an ER diagram's input.
+    pub fn schema(
+        &mut self,
+        limit: usize,
+    ) -> Result<(Vec<crate::er::Table>, Vec<ForeignKey>), String> {
+        let fks = self.foreign_keys()?;
+        let mut tables = vec![];
+        for (name, kind) in self.tables()?.into_iter().take(limit) {
+            if kind == "VIEW" {
+                continue;
+            }
+            let cols = self.query(&self.driver().columns_sql(&name))?;
+            let columns = cols
+                .rows
+                .into_iter()
+                .map(|mut c| {
+                    let fk = fks.iter().any(|f| f.table == name && f.column == c[0]);
+                    let key = if c[3] == "PK" {
+                        "PK"
+                    } else if fk {
+                        "FK"
+                    } else {
+                        ""
+                    };
+                    (
+                        std::mem::take(&mut c[0]),
+                        std::mem::take(&mut c[1]),
+                        key.to_string(),
+                    )
+                })
+                .collect();
+            tables.push(crate::er::Table { name, columns });
+        }
+        Ok((tables, fks))
+    }
+
+    pub fn foreign_keys(&mut self) -> Result<Vec<ForeignKey>, String> {
+        let r = self.query(self.driver().foreign_keys_sql())?;
+        Ok(r.rows
+            .into_iter()
+            .map(|mut x| ForeignKey {
+                table: std::mem::take(&mut x[0]),
+                column: std::mem::take(&mut x[1]),
+                ref_table: std::mem::take(&mut x[2]),
+                ref_column: std::mem::take(&mut x[3]),
+            })
+            .collect())
+    }
+}
+
+fn push_row(r: &mut QueryResult, row: Vec<String>) {
+    if r.rows.len() < MAX_ROWS {
+        r.rows.push(row);
+    } else {
+        r.truncated = true;
+    }
+}
+
+fn sqlite_query(c: &rusqlite::Connection, sql: &str) -> Result<Vec<QueryResult>, String> {
+    use rusqlite::fallible_iterator::FallibleIterator as _;
+    use rusqlite::types::ValueRef;
+    let mut out = vec![];
+    let mut batch = rusqlite::Batch::new(c, sql);
+    while let Some(mut stmt) = batch.next().map_err(|e| e.to_string())? {
+        let n = stmt.column_count();
+        if n == 0 {
+            let changed = stmt.execute([]).map_err(|e| e.to_string())?;
+            out.push(QueryResult {
+                affected: Some(changed as u64),
+                ..Default::default()
+            });
+            continue;
+        }
+        let mut r = QueryResult {
+            columns: stmt.column_names().iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        };
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let cells = (0..n)
+                .map(|i| match row.get_ref(i) {
+                    Ok(ValueRef::Null) | Err(_) => "NULL".into(),
+                    Ok(ValueRef::Integer(v)) => v.to_string(),
+                    Ok(ValueRef::Real(v)) => v.to_string(),
+                    Ok(ValueRef::Text(t)) => String::from_utf8_lossy(t).into_owned(),
+                    Ok(ValueRef::Blob(b)) => format!("[BLOB {} bytes]", b.len()),
+                })
+                .collect();
+            push_row(&mut r, cells);
+        }
+        out.push(r);
+    }
+    Ok(out)
+}
+
+fn pg_query(c: &mut postgres::Client, sql: &str) -> Result<Vec<QueryResult>, String> {
+    use postgres::SimpleQueryMessage as M;
+    let mut out = vec![];
+    let mut current: Option<QueryResult> = None;
+    for msg in c.simple_query(sql).map_err(pg_err)? {
+        match msg {
+            M::RowDescription(cols) => {
+                current = Some(QueryResult {
+                    columns: cols.iter().map(|c| c.name().to_string()).collect(),
+                    ..Default::default()
+                });
+            }
+            M::Row(row) => {
+                let r = current.get_or_insert_with(|| QueryResult {
+                    columns: row.columns().iter().map(|c| c.name().to_string()).collect(),
+                    ..Default::default()
+                });
+                let cells = (0..row.len())
+                    .map(|i| row.get(i).unwrap_or("NULL").to_string())
+                    .collect();
+                push_row(r, cells);
+            }
+            M::CommandComplete(n) => {
+                out.push(current.take().unwrap_or(QueryResult {
+                    affected: Some(n),
+                    ..Default::default()
+                }));
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// postgres::Error displays as "db error": show the server's message, detail and hint.
+fn pg_err(e: postgres::Error) -> String {
+    match e.as_db_error() {
+        Some(d) => {
+            let mut s = format!("{}: {}", d.severity(), d.message());
+            if let Some(x) = d.detail() {
+                s += &format!("\nDETAIL: {x}");
+            }
+            if let Some(x) = d.hint() {
+                s += &format!("\nHINT: {x}");
+            }
+            s
+        }
+        None => e.to_string(),
+    }
+}
+
+fn mysql_query(c: &mut mysql::Conn, sql: &str) -> Result<Vec<QueryResult>, String> {
+    use mysql::Value as V;
+    use mysql::prelude::Queryable;
+    let mut out = vec![];
+    let mut result = c.query_iter(sql).map_err(|e| e.to_string())?;
+    while let Some(set) = result.iter() {
+        let columns: Vec<String> = set
+            .columns()
+            .as_ref()
+            .iter()
+            .map(|c| c.name_str().into_owned())
+            .collect();
+        let affected = set.affected_rows();
+        let mut r = QueryResult {
+            columns,
+            ..Default::default()
+        };
+        for row in set {
+            let row = row.map_err(|e| e.to_string())?;
+            let cells = (0..row.len())
+                .map(|i| match row.as_ref(i) {
+                    None | Some(V::NULL) => "NULL".into(),
+                    Some(V::Bytes(b)) => String::from_utf8_lossy(b).into_owned(),
+                    Some(V::Int(v)) => v.to_string(),
+                    Some(V::UInt(v)) => v.to_string(),
+                    Some(V::Float(v)) => v.to_string(),
+                    Some(V::Double(v)) => v.to_string(),
+                    Some(v @ (V::Date(..) | V::Time(..))) => {
+                        v.as_sql(true).trim_matches('\'').to_string()
+                    }
+                })
+                .collect();
+            push_row(&mut r, cells);
+        }
+        if r.columns.is_empty() {
+            r.affected = Some(affected);
+        }
+        out.push(r);
+    }
+    Ok(out)
+}
+
+pub fn config_dir() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("rusty-beaver")
+}
+
+fn connections_path() -> PathBuf {
+    std::env::var_os("RUSTY_BEAVER_CONFIG")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config_dir().join("connections.json"))
+}
+
+/// Saved connections; on first start a bundled demo SQLite database.
+pub fn load_connections() -> Vec<ConnConfig> {
+    if let Ok(text) = std::fs::read_to_string(connections_path())
+        && let Ok(v) = serde_json::from_str(&text)
+    {
+        return v;
+    }
+    match demo_db() {
+        Ok(path) => vec![ConnConfig {
+            name: "Beaver Demo (SQLite)".into(),
+            driver: Driver::Sqlite,
+            host: String::new(),
+            port: 0,
+            database: path.to_string_lossy().into_owned(),
+            user: String::new(),
+            password: String::new(),
+            manual_commit: false,
+            production: false,
+            read_only: false,
+        }],
+        Err(_) => Vec::new(),
+    }
+}
+
+pub fn save_connections(list: &[ConnConfig]) -> Result<(), String> {
+    let path = connections_path();
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, serde_json::to_string_pretty(list).unwrap()).map_err(|e| e.to_string())
+}
+
+/// A small demo database so the app has something to show out of the box.
+fn demo_db() -> Result<PathBuf, String> {
+    let dir = config_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join("demo.db");
+    if path.exists() {
+        return Ok(path);
+    }
+    let c = rusqlite::Connection::open(&path).map_err(|e| e.to_string())?;
+    c.execute_batch(include_str!("demo.sql"))
+        .map_err(|e| e.to_string())?;
+    Ok(path)
+}
+
+/// SQL templates for a table, like DBeaver's "Generate SQL" menu.
+/// `cols` are (name, is_key); kind: select | insert | update | delete | count.
+pub fn generate(
+    driver: Driver,
+    table: &str,
+    cols: &[(String, bool)],
+    kind: &str,
+) -> Result<String, String> {
+    let t = driver.table_ref(table);
+    let names = || {
+        cols.iter()
+            .map(|(c, _)| driver.quote(c))
+            .collect::<Vec<_>>()
+    };
+    let key: Vec<String> = cols
+        .iter()
+        .filter(|(_, k)| *k)
+        .map(|(c, _)| format!("{} = ?", driver.quote(c)))
+        .collect();
+    let where_ = if key.is_empty() {
+        "<condition>".to_string()
+    } else {
+        key.join(" AND ")
+    };
+    Ok(match kind {
+        "select" => format!("SELECT {}\nFROM {t};", names().join(",\n       ")),
+        "insert" => format!(
+            "INSERT INTO {t} ({})\nVALUES ({});",
+            names().join(", "),
+            vec!["?"; cols.len()].join(", ")
+        ),
+        "update" => format!(
+            "UPDATE {t}\nSET {}\nWHERE {where_};",
+            cols.iter()
+                .filter(|(_, k)| !k)
+                .map(|(c, _)| format!("{} = ?", driver.quote(c)))
+                .collect::<Vec<_>>()
+                .join(",\n    ")
+        ),
+        "delete" => format!("DELETE FROM {t}\nWHERE {where_};"),
+        "count" => format!("SELECT count(*) FROM {t};"),
+        other => {
+            return Err(format!(
+                "unknown kind {other:?}: select, insert, update, delete or count"
+            ));
+        }
+    })
+}
+
+/// Byte ranges and names of `:name` parameters, outside quotes and comments (`::type` casts
+/// and `:=` are not parameters).
+fn param_spans(sql: &str) -> Vec<(std::ops::Range<usize>, String)> {
+    let b = sql.as_bytes();
+    let mut out = vec![];
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'\'' | b'"' | b'`') => {
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += 1;
+                }
+            }
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+            }
+            b':' if b.get(i + 1) == Some(&b':') => i += 1,
+            b':' if i > 0 && b[i - 1] == b':' => {}
+            b':' if b
+                .get(i + 1)
+                .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_') =>
+            {
+                let start = i;
+                i += 1;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                out.push((start..i, sql[start + 1..i].to_string()));
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Does the SQL change data or schema? Looks for INSERT, UPDATE, DELETE, MERGE, DROP, ALTER,
+/// TRUNCATE, CREATE, GRANT, REVOKE, RENAME as words outside strings and comments.
+/// ponytail: keyword scan errs on the side of asking (a column named "update" asks too)
+pub fn is_write(sql: &str) -> bool {
+    const WRITES: &[&str] = &[
+        "INSERT", "UPDATE", "DELETE", "MERGE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT",
+        "REVOKE", "RENAME",
+    ];
+    let b = sql.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'\'' | b'"' | b'`') => {
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += 1;
+                }
+            }
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+            }
+            c if c.is_ascii_alphabetic() => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                if WRITES
+                    .iter()
+                    .any(|w| w.eq_ignore_ascii_case(&sql[start..i]))
+                {
+                    return true;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Distinct parameter names in order of appearance.
+pub fn params(sql: &str) -> Vec<String> {
+    let mut v: Vec<String> = vec![];
+    for (_, n) in param_spans(sql) {
+        if !v.contains(&n) {
+            v.push(n);
+        }
+    }
+    v
+}
+
+/// Replace each `:name` by its value, as typed (quote strings yourself, like DBeaver).
+pub fn bind(
+    sql: &str,
+    values: &std::collections::HashMap<String, String>,
+) -> Result<String, String> {
+    let mut out = String::new();
+    let mut last = 0;
+    for (r, n) in param_spans(sql) {
+        let v = values.get(&n).ok_or_else(|| format!("no value for :{n}"))?;
+        out.push_str(&sql[last..r.start]);
+        out.push_str(v);
+        last = r.end;
+    }
+    out.push_str(&sql[last..]);
+    Ok(out)
+}
+
+/// One query counting the rows of every table: (table, rows), biggest first.
+pub fn row_counts_sql(driver: Driver, tables: &[String]) -> String {
+    let parts: Vec<String> = tables
+        .iter()
+        .map(|t| {
+            format!(
+                "SELECT {} AS table_name, count(*) AS row_count FROM {}",
+                literal(t),
+                driver.table_ref(t)
+            )
+        })
+        .collect();
+    format!("{}\nORDER BY row_count DESC;", parts.join("\nUNION ALL\n"))
+}
+
+/// Byte range of the statement at `offset`: statements end at `;` or at a blank line,
+/// outside quotes and comments (DBeaver's "smart" delimiting). A cursor in the gap after a
+/// statement belongs to that statement.
+pub fn statement_at(sql: &str, offset: usize) -> std::ops::Range<usize> {
+    let b = sql.as_bytes();
+    let mut bounds = vec![0];
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            q @ (b'\'' | b'"' | b'`') => {
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += 1;
+                }
+            }
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b';' => bounds.push(i + 1),
+            b'\n' => {
+                // a line holding only whitespace ends the statement
+                let mut j = i + 1;
+                while j < b.len() && (b[j] == b' ' || b[j] == b'\t' || b[j] == b'\r') {
+                    j += 1;
+                }
+                if j < b.len() && b[j] == b'\n' {
+                    bounds.push(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    bounds.push(sql.len());
+    // Trimmed, non-empty pieces.
+    let pieces: Vec<std::ops::Range<usize>> = bounds
+        .windows(2)
+        .filter_map(|w| {
+            let text = &sql[w[0]..w[1]];
+            let start = w[0] + (text.len() - text.trim_start().len());
+            (!text.trim().is_empty()).then(|| start..w[0] + text.trim_end().len())
+        })
+        .collect();
+    pieces
+        .iter()
+        .find(|r| r.start <= offset && offset <= r.end)
+        .or_else(|| pieces.iter().rfind(|r| r.end <= offset))
+        .or(pieces.first())
+        .cloned()
+        .unwrap_or(0..0)
+}
+
+/// A result as text in a format picked by file extension: csv, tsv, json, md, sql (INSERTs
+/// into `table`), anything else is CSV.
+pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String {
+    let nul = |v: &str| v == "NULL";
+    match ext.to_ascii_lowercase().as_str() {
+        "json" => {
+            let rows: Vec<serde_json::Value> = r
+                .rows
+                .iter()
+                .map(|row| {
+                    serde_json::Value::Object(
+                        r.columns
+                            .iter()
+                            .zip(row)
+                            .map(|(c, v)| {
+                                (
+                                    c.clone(),
+                                    if nul(v) {
+                                        serde_json::Value::Null
+                                    } else {
+                                        serde_json::Value::String(v.clone())
+                                    },
+                                )
+                            })
+                            .collect(),
+                    )
+                })
+                .collect();
+            serde_json::to_string_pretty(&rows).unwrap() + "\n"
+        }
+        "md" | "markdown" => {
+            let esc = |s: &str| s.replace('|', "\\|").replace('\n', " ");
+            let mut out = format!(
+                "| {} |\n|{}|\n",
+                r.columns
+                    .iter()
+                    .map(|c| esc(c))
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+                vec![" --- "; r.columns.len()].join("|")
+            );
+            for row in &r.rows {
+                out += &format!(
+                    "| {} |\n",
+                    row.iter().map(|v| esc(v)).collect::<Vec<_>>().join(" | ")
+                );
+            }
+            out
+        }
+        "txt" | "text" => {
+            // Aligned plain text, as DBeaver's Text view; long cells are cut at 60 characters.
+            let cut = |v: &str| -> String {
+                let v = v.replace(['\n', '\t'], " ");
+                if v.chars().count() > 60 {
+                    format!("{}…", v.chars().take(59).collect::<String>())
+                } else {
+                    v
+                }
+            };
+            let cells: Vec<Vec<String>> = std::iter::once(r.columns.clone())
+                .chain(r.rows.iter().cloned())
+                .map(|row| row.iter().map(|v| cut(v)).collect())
+                .collect();
+            let widths: Vec<usize> = (0..r.columns.len())
+                .map(|c| {
+                    cells
+                        .iter()
+                        .map(|row| row[c].chars().count())
+                        .max()
+                        .unwrap_or(0)
+                })
+                .collect();
+            let line = |row: &[String]| {
+                row.iter()
+                    .zip(&widths)
+                    .map(|(v, w)| format!("{v:<w$}"))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+                    .trim_end()
+                    .to_string()
+            };
+            let mut out = line(&cells[0]) + "\n";
+            out += &widths
+                .iter()
+                .map(|w| "-".repeat(*w))
+                .collect::<Vec<_>>()
+                .join("-+-");
+            out += "\n";
+            for row in &cells[1..] {
+                out += &(line(row) + "\n");
+            }
+            out
+        }
+        "tsv" => {
+            let line = |row: &[String]| {
+                row.iter()
+                    .map(|v| v.replace(['\t', '\n'], " "))
+                    .collect::<Vec<_>>()
+                    .join("\t")
+            };
+            std::iter::once(line(&r.columns))
+                .chain(r.rows.iter().map(|row| line(row)))
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n"
+        }
+        "sql" => {
+            let cols = r
+                .columns
+                .iter()
+                .map(|c| driver.quote(c))
+                .collect::<Vec<_>>()
+                .join(", ");
+            r.rows
+                .iter()
+                .map(|row| {
+                    format!(
+                        "INSERT INTO {} ({cols}) VALUES ({});\n",
+                        driver.table_ref(table),
+                        row.iter()
+                            .map(|v| if nul(v) { "NULL".into() } else { literal(v) })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })
+                .collect()
+        }
+        _ => to_csv(r),
+    }
+}
+
+/// Parse RFC 4180 CSV (quoted fields, "" escapes, CRLF or LF); blank lines are skipped.
+pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
+    let mut rows = vec![];
+    let (mut row, mut field) = (vec![], String::new());
+    let mut chars = text.trim_start_matches('\u{feff}').chars().peekable();
+    let mut quoted = false;
+    while let Some(c) = chars.next() {
+        match (quoted, c) {
+            (true, '"') if chars.peek() == Some(&'"') => {
+                field.push('"');
+                chars.next();
+            }
+            (true, '"') => quoted = false,
+            (true, c) => field.push(c),
+            (false, '"') if field.is_empty() => quoted = true,
+            (false, ',') => row.push(std::mem::take(&mut field)),
+            (false, '\r') => {}
+            (false, '\n') => {
+                row.push(std::mem::take(&mut field));
+                if !(row.len() == 1 && row[0].is_empty()) {
+                    rows.push(std::mem::take(&mut row));
+                }
+                row.clear();
+            }
+            (false, c) => field.push(c),
+        }
+    }
+    if !field.is_empty() || !row.is_empty() {
+        row.push(field);
+        rows.push(row);
+    }
+    rows
+}
+
+/// INSERT statements for CSV text whose header row names the table's columns.
+/// Empty fields and NULL become SQL NULL.
+pub fn csv_inserts(driver: Driver, table: &str, text: &str) -> Result<Vec<String>, String> {
+    let mut rows = parse_csv(text).into_iter();
+    let header = rows.next().ok_or("the file is empty")?;
+    let cols = header
+        .iter()
+        .map(|h| driver.quote(h.trim()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    rows.enumerate()
+        .map(|(i, r)| {
+            if r.len() != header.len() {
+                return Err(format!(
+                    "line {}: {} fields, the header has {}",
+                    i + 2,
+                    r.len(),
+                    header.len()
+                ));
+            }
+            let vals = r
+                .iter()
+                .map(|v| {
+                    if v.is_empty() || v == "NULL" {
+                        "NULL".into()
+                    } else {
+                        literal(v)
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            Ok(format!(
+                "INSERT INTO {} ({cols}) VALUES ({vals});",
+                driver.table_ref(table)
+            ))
+        })
+        .collect()
+}
+
+/// RFC 4180 CSV.
+pub fn to_csv(r: &QueryResult) -> String {
+    let cell = |s: &str| {
+        if s.contains([',', '"', '\n', '\r']) {
+            format!("\"{}\"", s.replace('"', "\"\""))
+        } else {
+            s.to_string()
+        }
+    };
+    let line = |row: &[String]| row.iter().map(|s| cell(s)).collect::<Vec<_>>().join(",");
+    let mut out = line(&r.columns);
+    for row in &r.rows {
+        out.push_str("\r\n");
+        out.push_str(&line(row));
+    }
+    out.push_str("\r\n");
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sqlite_roundtrip_and_metadata() {
+        let mut s = Session::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+        let r = s.query("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT); INSERT INTO t(name) VALUES ('a'),(NULL);").unwrap();
+        assert_eq!(r.affected, Some(2));
+        let r = s.query("SELECT id, name FROM t ORDER BY id").unwrap();
+        assert_eq!(r.columns, ["id", "name"]);
+        assert_eq!(
+            r.rows,
+            [
+                vec!["1".to_string(), "a".into()],
+                vec!["2".into(), "NULL".into()]
+            ]
+        );
+        assert_eq!(
+            s.tables().unwrap(),
+            [("t".to_string(), "TABLE".to_string())]
+        );
+        let cols = s.columns("t").unwrap();
+        assert_eq!(cols.rows[0], ["id", "INTEGER", "YES", "PK", ""]);
+        s.query(
+            "CREATE TABLE c(id INTEGER PRIMARY KEY, t_id INT REFERENCES t(id), x INT REFERENCES t)",
+        )
+        .unwrap();
+        let fk = s.columns("c").unwrap();
+        assert_eq!(fk.rows[1][3..], ["FK", "t.id"]);
+        assert_eq!(fk.rows[2][3..], ["FK", "t"]);
+        assert_eq!(s.foreign_keys().unwrap().len(), 2);
+        assert!(s.query("SELEC nope").is_err());
+    }
+
+    #[test]
+    fn scripts_return_every_result() {
+        let mut s = Session::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+        let v = s.query_all("CREATE TABLE t(a); INSERT INTO t VALUES (1),(2); SELECT * FROM t; SELECT count(*) FROM t;").unwrap();
+        assert_eq!(v.len(), 4);
+        assert_eq!(
+            (v[1].affected, v[2].rows.len(), v[3].rows[0][0].as_str()),
+            (Some(2), 2, "2")
+        );
+    }
+
+    #[test]
+    fn quoting_and_csv() {
+        assert_eq!(
+            Driver::Postgres.select_all("public.my\"t", "", 5),
+            "SELECT * FROM \"public\".\"my\"\"t\" LIMIT 5;"
+        );
+        assert_eq!(
+            Driver::Mysql.select_all("a`b", " id > 3 ", 1),
+            "SELECT * FROM `a``b` WHERE id > 3 LIMIT 1;"
+        );
+        let r = QueryResult {
+            columns: vec!["a".into(), "b".into()],
+            rows: vec![vec!["x,y".into(), "q\"".into()]],
+            ..Default::default()
+        };
+        assert_eq!(to_csv(&r), "a,b\r\n\"x,y\",\"q\"\"\"\r\n");
+    }
+
+    #[test]
+    fn grid_changes_become_sql_and_apply() {
+        let mut s = Session::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+        s.query("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT, n INT); INSERT INTO t VALUES (1,'a',1),(2,'b''s',2),(3,'c',3);").unwrap();
+        let r = s.query("SELECT * FROM t ORDER BY id").unwrap();
+        let mut rows = r.rows.clone();
+        rows.push(vec!["NULL".into(); 3]); // added in the grid
+        let mut c = Changes::default();
+        c.cells.insert((1, 1), Some("it's".into()));
+        c.cells.insert((1, 2), None);
+        c.deleted.insert(2);
+        c.inserted.insert(3);
+        c.cells.insert((3, 1), Some("new".into()));
+        assert_eq!(c.count(), 3);
+        let sql = c
+            .to_sql(Driver::Sqlite, "t", &r.columns, &rows, &[0])
+            .unwrap();
+        assert_eq!(
+            sql,
+            [
+                "DELETE FROM \"t\" WHERE \"id\" = '3';",
+                "INSERT INTO \"t\" (\"name\") VALUES ('new');",
+                "UPDATE \"t\" SET \"name\" = 'it''s', \"n\" = NULL WHERE \"id\" = '2';",
+            ]
+        );
+        s.apply(&sql).unwrap();
+        let after = s.query("SELECT name, n FROM t ORDER BY id").unwrap();
+        assert_eq!(
+            after.rows,
+            [
+                vec!["a".to_string(), "1".into()],
+                vec!["it's".into(), "NULL".into()],
+                vec!["new".into(), "NULL".into()]
+            ]
+        );
+        // A failing statement rolls everything back.
+        assert!(s.apply(&["DELETE FROM t".into(), "nope".into()]).is_err());
+        assert_eq!(s.query("SELECT count(*) FROM t").unwrap().rows[0][0], "3");
+        // No primary key: updates are refused, inserts are fine.
+        assert!(
+            c.to_sql(Driver::Sqlite, "t", &r.columns, &rows, &[])
+                .is_err()
+        );
+        assert!(s.ddl("t").unwrap().starts_with("CREATE TABLE t("));
+    }
+
+    #[test]
+    fn sqlite_query_can_be_cancelled() {
+        let mut s = Session::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+        let cfg = ConnConfig {
+            name: "m".into(),
+            driver: Driver::Sqlite,
+            host: String::new(),
+            port: 0,
+            database: String::new(),
+            user: String::new(),
+            password: String::new(),
+            manual_commit: false,
+            production: false,
+            read_only: false,
+        };
+        let c = s.canceller(&cfg);
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            c.cancel().unwrap();
+        });
+        let r = s.query("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n) SELECT count(*) FROM n");
+        t.join().unwrap();
+        assert!(r.unwrap_err().contains("interrupt"));
+        assert!(s.query("SELECT 1").is_ok()); // the session is still usable
+    }
+
+    #[test]
+    fn csv_roundtrip_and_import() {
+        let r = QueryResult {
+            columns: vec!["id".into(), "name".into()],
+            rows: vec![
+                vec!["1".into(), "a, \"b\"\nc".into()],
+                vec!["2".into(), "NULL".into()],
+            ],
+            ..Default::default()
+        };
+        let parsed = parse_csv(&to_csv(&r));
+        assert_eq!(parsed[1], ["1", "a, \"b\"\nc"]);
+        let mut s = Session::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+        s.query("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT)")
+            .unwrap();
+        s.apply(&csv_inserts(Driver::Sqlite, "t", &to_csv(&r)).unwrap())
+            .unwrap();
+        assert_eq!(
+            s.query("SELECT name IS NULL FROM t WHERE id = 2")
+                .unwrap()
+                .rows[0][0],
+            "1"
+        );
+        assert!(
+            csv_inserts(Driver::Sqlite, "t", "id,name\n1\n")
+                .unwrap_err()
+                .contains("line 2")
+        );
+    }
+
+    #[test]
+    fn export_formats() {
+        let r = QueryResult {
+            columns: vec!["a".into(), "b".into()],
+            rows: vec![
+                vec!["1".into(), "NULL".into()],
+                vec!["x|y".into(), "it's".into()],
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            export(&r, "md", Driver::Sqlite, "t"),
+            "| a | b |\n| --- | --- |\n| 1 | NULL |\n| x\\|y | it's |\n"
+        );
+        assert_eq!(
+            export(&r, "SQL", Driver::Mysql, "t"),
+            "INSERT INTO `t` (`a`, `b`) VALUES ('1', NULL);\nINSERT INTO `t` (`a`, `b`) VALUES ('x|y', 'it''s');\n"
+        );
+        let j: serde_json::Value =
+            serde_json::from_str(&export(&r, "json", Driver::Sqlite, "t")).unwrap();
+        assert_eq!(j[0]["b"], serde_json::Value::Null);
+        assert_eq!(
+            export(&r, "tsv", Driver::Sqlite, "t"),
+            "a\tb\n1\tNULL\nx|y\tit's\n"
+        );
+        assert_eq!(
+            export(&r, "txt", Driver::Sqlite, "t"),
+            "a   | b\n----+-----\n1   | NULL\nx|y | it's\n"
+        );
+    }
+
+    #[test]
+    fn row_counts() {
+        let mut s = Session::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+        s.query("CREATE TABLE a(x); CREATE TABLE b(x); INSERT INTO b VALUES (1),(2);")
+            .unwrap();
+        let r = s
+            .query(&row_counts_sql(Driver::Sqlite, &["a".into(), "b".into()]))
+            .unwrap();
+        assert_eq!(
+            r.rows,
+            [
+                vec!["b".to_string(), "2".into()],
+                vec!["a".into(), "0".into()]
+            ]
+        );
+    }
+
+    #[test]
+    fn generated_sql() {
+        let cols = [("id".to_string(), true), ("name".to_string(), false)];
+        assert_eq!(
+            generate(Driver::Mysql, "t", &cols, "update").unwrap(),
+            "UPDATE `t`\nSET `name` = ?\nWHERE `id` = ?;"
+        );
+        assert_eq!(
+            generate(Driver::Postgres, "public.t", &cols, "insert").unwrap(),
+            "INSERT INTO \"public\".\"t\" (\"id\", \"name\")\nVALUES (?, ?);"
+        );
+        assert!(generate(Driver::Sqlite, "t", &cols, "nope").is_err());
+    }
+
+    #[test]
+    fn write_detection() {
+        assert!(!is_write(
+            "SELECT 'drop table x', replace(name, 'a', 'b') FROM t -- delete\n/* update */"
+        ));
+        assert!(is_write("with x as (select 1) delete from t"));
+        assert!(is_write("SELECT 1; Update t SET a = 1"));
+        assert!(!is_write("EXPLAIN SELECT * FROM updates_log"));
+    }
+
+    #[test]
+    fn query_parameters() {
+        let sql =
+            "SELECT ':skip', x::int FROM t -- :nope\nWHERE a = :rank AND b > :min AND c = :rank";
+        assert_eq!(params(sql), ["rank", "min"]);
+        let v: std::collections::HashMap<String, String> = [
+            ("rank".to_string(), "'Private'".to_string()),
+            ("min".into(), "3".into()),
+        ]
+        .into();
+        assert_eq!(
+            bind(sql, &v).unwrap(),
+            "SELECT ':skip', x::int FROM t -- :nope\nWHERE a = 'Private' AND b > 3 AND c = 'Private'"
+        );
+        assert!(
+            bind("SELECT :x", &Default::default())
+                .unwrap_err()
+                .contains(":x")
+        );
+    }
+
+    #[test]
+    fn statement_under_cursor() {
+        let sql = "SELECT 1;\nSELECT ';' AS semi -- ; comment\n  FROM t;\n\nUPDATE t SET a = 1\n\nSELECT 3";
+        let at = |o: usize| &sql[statement_at(sql, o)];
+        assert_eq!(at(0), "SELECT 1;");
+        assert_eq!(at(9), "SELECT 1;"); // right after the ;
+        assert_eq!(at(12), "SELECT ';' AS semi -- ; comment\n  FROM t;");
+        assert_eq!(at(sql.find("UPDATE").unwrap() + 3), "UPDATE t SET a = 1");
+        assert_eq!(at(sql.len()), "SELECT 3");
+        assert_eq!(
+            at(sql.find("\n\nUPDATE").unwrap() + 1),
+            "SELECT ';' AS semi -- ; comment\n  FROM t;"
+        ); // blank line gap
+        assert_eq!(&"  "[statement_at("  ", 1)], "");
+    }
+
+    #[test]
+    fn demo_sql_loads() {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(include_str!("demo.sql")).unwrap();
+    }
+}

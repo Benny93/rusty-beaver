@@ -1,0 +1,435 @@
+//! Grid commands (copy, edit, filter, save, …) shared by the context menu, shortcuts and MCP.
+
+use super::*;
+
+impl AppView {
+    /// Run a grid command on the active tab and show its outcome in the status bar.
+    pub(super) fn report(&mut self, op: GridOp, window: &mut Window, cx: &mut Context<Self>) {
+        let r = self.grid_op(
+            op,
+            window,
+            cx,
+            Box::new(|v, r, _, cx| {
+                if let Err(e) = r {
+                    v.status = e;
+                    cx.notify();
+                }
+            }),
+        );
+        match r {
+            Ok(Some(msg)) => self.status = msg,
+            Ok(None) => {}
+            Err(e) => self.status = e,
+        }
+        cx.notify();
+    }
+
+    /// Grid commands on the active tab's selected cell. `done` only runs for Save.
+    pub(super) fn grid_op(
+        &mut self,
+        op: GridOp,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        done: Done,
+    ) -> Result<Option<String>, String> {
+        let ix = self.active;
+        let t = self.tabs.get(ix).ok_or("no tab open")?;
+        let table = match &t.kind {
+            TabKind::Table(n) => Some(n.clone()),
+            _ => None,
+        };
+        let editable = || {
+            table.clone().ok_or("query results are read-only: open the table (double-click it in the navigator) to edit rows")
+        };
+        let grid = t.grid.clone();
+        let g = grid.read(cx).delegate();
+        let cell = t
+            .cell
+            .filter(|(r, c)| *r < g.order.len() && *c < g.r.columns.len());
+        let need_cell = || cell.ok_or("select a cell first");
+        let driver = self
+            .conn_ix(t.conn)
+            .map(|i| self.conns[i].cfg.driver)
+            .unwrap_or(Driver::Sqlite);
+        match op {
+            GridOp::FilterBy | GridOp::FilterExclude => {
+                editable()?;
+                let (row, col) = need_cell()?;
+                let id = g.row_id(row).unwrap_or_default();
+                let (name, v) = (driver.quote(&g.r.columns[col]), g.value(id, col));
+                let cond = match (op == GridOp::FilterBy, v == "NULL") {
+                    (true, true) => format!("{name} IS NULL"),
+                    (false, true) => format!("{name} IS NOT NULL"),
+                    (true, false) => format!("{name} = {}", db::literal(&v)),
+                    (false, false) => format!("{name} <> {}", db::literal(&v)),
+                };
+                let tab = &mut self.tabs[ix];
+                let old = tab.filter.read(cx).value().trim().to_string();
+                let filter = if old.is_empty() {
+                    cond
+                } else {
+                    format!("({old}) AND {cond}")
+                };
+                tab.filter
+                    .update(cx, |i, cx| i.set_value(filter.clone(), window, cx));
+                tab.limit = PAGE;
+                self.reload_table(ix, window, cx, done);
+                Ok(Some(format!("Filter: {filter}")))
+            }
+            GridOp::CopyColumnIn => {
+                let (_, col) = need_cell()?;
+                let mut seen = std::collections::HashSet::new();
+                let vals: Vec<String> = g
+                    .order
+                    .iter()
+                    .map(|&id| g.value(id, col))
+                    .filter(|v| v != "NULL" && seen.insert(v.clone()))
+                    .map(|v| {
+                        if v.parse::<f64>().is_ok() {
+                            v
+                        } else {
+                            db::literal(&v)
+                        }
+                    })
+                    .collect();
+                let text = format!("({})", vals.join(", "));
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                Ok(Some(format!(
+                    "Copied {} as an IN list",
+                    plural(vals.len(), "value")
+                )))
+            }
+            GridOp::CopyAllMarkdown => {
+                let (text, rows) = self.export_text("md", cx)?;
+                cx.write_to_clipboard(ClipboardItem::new_string(text));
+                Ok(Some(format!("Copied {} as Markdown", plural(rows, "row"))))
+            }
+            GridOp::CopyValue | GridOp::CopyRow | GridOp::CopyInsert => {
+                let (row, col) = need_cell()?;
+                let id = g.row_id(row).unwrap_or_default();
+                let values: Vec<String> = (0..g.r.columns.len()).map(|c| g.value(id, c)).collect();
+                let text = match op {
+                    GridOp::CopyValue => values[col].clone(),
+                    GridOp::CopyRow => values.join("\t"),
+                    _ => format!(
+                        "INSERT INTO {} ({}) VALUES ({});",
+                        driver.table_ref(table.as_deref().unwrap_or("table_name")),
+                        g.r.columns
+                            .iter()
+                            .map(|c| driver.quote(c))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        values
+                            .iter()
+                            .map(|v| if v == "NULL" {
+                                v.clone()
+                            } else {
+                                db::literal(v)
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                };
+                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                Ok(Some(format!(
+                    "Copied {}",
+                    if text.len() > 60 {
+                        format!("{}…", &text[..text.floor_char_boundary(60)])
+                    } else {
+                        text
+                    }
+                )))
+            }
+            GridOp::EditCell => {
+                editable()?;
+                let (row, col) = need_cell()?;
+                let id = g.row_id(row).unwrap_or_default();
+                let v = g.value(id, col);
+                let tab = &mut self.tabs[ix];
+                tab.editing = Some((id, col));
+                tab.edit_input.update(cx, |i, cx| {
+                    i.set_value(if v == "NULL" { String::new() } else { v }, window, cx);
+                    i.focus(window, cx);
+                });
+                Ok(None)
+            }
+            GridOp::SetNull => {
+                editable()?;
+                let (row, col) = need_cell()?;
+                let id = g.row_id(row).unwrap_or_default();
+                self.set_cell(ix, id, col, None, cx);
+                Ok(Some("Set to NULL (not saved yet)".into()))
+            }
+            GridOp::DeleteRow => {
+                editable()?;
+                let (row, _) = need_cell()?;
+                let id = g.row_id(row).unwrap_or_default();
+                grid.update(cx, |g, cx| {
+                    let d = &mut g.delegate_mut().changes.deleted;
+                    if !d.remove(&id) {
+                        d.insert(id);
+                    }
+                    cx.notify();
+                });
+                Ok(Some("Row marked for deletion (Save to apply)".into()))
+            }
+            GridOp::AddRow => {
+                editable()?;
+                let row = grid.update(cx, |g, cx| {
+                    let r = g.delegate_mut().add_row();
+                    g.refresh(cx);
+                    g.scroll_to_row(r, cx);
+                    r
+                });
+                self.tabs[ix].cell = Some((row, 0));
+                self.grid_op(GridOp::EditCell, window, cx, done)?;
+                Ok(Some("New row: type values, then Save".into()))
+            }
+            GridOp::FollowFk => {
+                editable()?;
+                let (row, col) = need_cell()?;
+                let id = g.row_id(row).unwrap_or_default();
+                let name = g.r.columns[col].clone();
+                let value = g.value(id, col);
+                // The Columns view knows what each column references ("table.column").
+                let refs = t
+                    .columns
+                    .read(cx)
+                    .delegate()
+                    .r
+                    .rows
+                    .iter()
+                    .find(|c| c[0] == name)
+                    .and_then(|c| c.get(4).cloned())
+                    .unwrap_or_default();
+                let target = refs
+                    .split(", ")
+                    .next()
+                    .filter(|r| !r.is_empty())
+                    .ok_or(format!("{name} is not a foreign key"))?
+                    .to_string();
+                if value == "NULL" {
+                    return Err(format!("{name} is NULL: it references nothing"));
+                }
+                // "schema.table.column" or "table.column"; a bare table means its primary key.
+                let (ref_table, ref_col) = match target.rsplit_once('.') {
+                    Some((t, c)) if !(driver == Driver::Postgres && !t.contains('.')) => {
+                        (t.to_string(), Some(c.to_string()))
+                    }
+                    _ => (target.clone(), None),
+                };
+                let conn = t.conn;
+                self.open_table(conn, ref_table.clone(), window, cx, done);
+                let filter = ref_col
+                    .map(|c| format!("{} = {}", driver.quote(&c), db::literal(&value)))
+                    .unwrap_or_default();
+                if let Some(nt) = self.tabs.get(self.active) {
+                    nt.filter
+                        .update(cx, |i, cx| i.set_value(filter.clone(), window, cx));
+                }
+                Ok(Some(format!("{ref_table}: {filter}")))
+            }
+            GridOp::DuplicateRow => {
+                editable()?;
+                let (row, _) = need_cell()?;
+                let id = g.row_id(row).unwrap_or_default();
+                let values: Vec<String> = (0..g.r.columns.len()).map(|c| g.value(id, c)).collect();
+                let key: Vec<usize> = t
+                    .key
+                    .iter()
+                    .filter_map(|k| g.r.columns.iter().position(|c| c == k))
+                    .collect();
+                let new = grid.update(cx, |g, cx| {
+                    let r = g.delegate_mut().add_row();
+                    g.refresh(cx);
+                    g.scroll_to_row(r, cx);
+                    r
+                });
+                let new_id = self.tabs[ix]
+                    .grid
+                    .read(cx)
+                    .delegate()
+                    .row_id(new)
+                    .unwrap_or_default();
+                for (c, v) in values.into_iter().enumerate() {
+                    if !key.contains(&c) && v != "NULL" {
+                        self.set_cell(ix, new_id, c, Some(v), cx);
+                    }
+                }
+                self.tabs[ix].cell = Some((new, 0));
+                Ok(Some(
+                    "Row duplicated (key left empty); Save to insert it".into(),
+                ))
+            }
+            GridOp::Revert => {
+                grid.update(cx, |g, cx| {
+                    g.delegate_mut().revert();
+                    g.refresh(cx);
+                });
+                self.tabs[ix].editing = None;
+                Ok(Some("Changes reverted".into()))
+            }
+            GridOp::Save => {
+                let key: Vec<usize> = t
+                    .key
+                    .iter()
+                    .filter_map(|k| g.r.columns.iter().position(|c| c == k))
+                    .collect();
+                let sql = editable().map_err(String::from).and_then(|table| {
+                    if g.changes.is_empty() {
+                        return Err("nothing to save".to_string());
+                    }
+                    g.changes
+                        .to_sql(driver, &table, &g.r.columns, &g.r.rows, &key)
+                });
+                let sql = match sql {
+                    Ok(sql) => sql,
+                    Err(e) => {
+                        done(self, Err(e.clone()), window, cx);
+                        return Err(e);
+                    }
+                };
+                let (n, conn) = (sql.len(), t.conn);
+                if let Some(name) = self
+                    .conn_ix(t.conn)
+                    .filter(|&i| self.conns[i].cfg.read_only)
+                    .map(|i| self.conns[i].cfg.name.clone())
+                {
+                    let e = format!("{name} is read-only: the changes cannot be saved");
+                    done(self, Err(e.clone()), window, cx);
+                    return Err(e);
+                }
+                let (confirmed, agent) = (t.confirmed, t.agent);
+                (self.tabs[ix].confirmed, self.tabs[ix].agent) = (false, false);
+                if !confirmed
+                    && let Some(name) = self
+                        .conn_ix(conn)
+                        .filter(|&i| self.conns[i].cfg.production)
+                        .map(|i| self.conns[i].cfg.name.clone())
+                {
+                    if agent {
+                        let e = format!(
+                            "{name} is a production connection: save again with confirm: true"
+                        );
+                        done(self, Err(e.clone()), window, cx);
+                        return Err(e);
+                    }
+                    let answer = window.prompt(
+                        PromptLevel::Warning,
+                        &format!(
+                            "Save {} change(s) to production ({name})?",
+                            g.changes.count()
+                        ),
+                        Some(&sql.join("\n").chars().take(600).collect::<String>()),
+                        &["Save", "Cancel"],
+                        cx,
+                    );
+                    cx.spawn_in(window, async move |this, cx| {
+                        if answer.await == Ok(0) {
+                            let _ = this.update_in(cx, |v, w, cx| {
+                                // The tab may have closed, or another become active, meanwhile.
+                                let Some(t) = v.tabs.get_mut(ix) else { return };
+                                t.confirmed = true;
+                                v.active = ix;
+                                let _ = v.grid_op(GridOp::Save, w, cx, done);
+                            });
+                        }
+                    })
+                    .detach();
+                    return Ok(Some("Waiting for confirmation…".into()));
+                }
+                self.tabs[ix].running = true;
+                // Manual commit: the changes join the open transaction instead of committing.
+                let (manual, in_tx) = self
+                    .conn_ix(conn)
+                    .map(|i| (self.conns[i].cfg.manual_commit, self.conns[i].in_tx))
+                    .unwrap_or_default();
+                if manual && let Some(i) = self.conn_ix(conn) {
+                    self.conns[i].in_tx = true;
+                    self.conns[i].tx_statements += n;
+                }
+                self.with_session::<QueryResult>(
+                    conn,
+                    move |s| {
+                        if manual {
+                            if !in_tx {
+                                s.begin()?;
+                            }
+                            s.apply_in(&sql, false)
+                        } else {
+                            s.apply(&sql)
+                        }
+                    },
+                    window,
+                    cx,
+                    Box::new(move |v, r, window, cx| {
+                        if let Some(t) = v.tabs.get_mut(ix) {
+                            t.running = false;
+                        }
+                        match r {
+                            Ok(_) => {
+                                v.status = if manual { format!("Saved: {n} statement(s) in the open transaction; Commit to keep them") } else { format!("Saved: {n} statement(s) committed") };
+                                v.reload_table(ix, window, cx, done);
+                            }
+                            Err(e) => {
+                                if let Some(t) = v.tabs.get_mut(ix) {
+                                    t.message = Some(Err(e.clone()));
+                                }
+                                cx.notify();
+                                done(v, Err(e), window, cx)
+                            }
+                        }
+                    }),
+                );
+                Ok(Some("Saving…".into()))
+            }
+        }
+    }
+
+    /// Record a pending cell change (dropped again when it equals the loaded value).
+    pub(super) fn set_cell(
+        &mut self,
+        tab: usize,
+        id: usize,
+        col: usize,
+        value: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.tabs[tab].grid.update(cx, |g, cx| {
+            let d = g.delegate_mut();
+            let loaded = d.r.rows.get(id).and_then(|r| r.get(col)).cloned();
+            let same = !d.changes.inserted.contains(&id)
+                && loaded.as_deref() == Some(value.as_deref().unwrap_or("NULL"));
+            if same {
+                d.changes.cells.remove(&(id, col));
+            } else {
+                d.changes.cells.insert((id, col), value);
+            }
+            cx.notify();
+        });
+    }
+
+    /// Close the cell editor, keeping `value` (None: cancel).
+    pub(super) fn finish_edit(
+        &mut self,
+        tab: usize,
+        value: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(t) = self.tabs.get_mut(tab) else {
+            return;
+        };
+        let Some((id, col)) = t.editing.take() else {
+            return;
+        };
+        if let Some(v) = value {
+            self.set_cell(tab, id, col, Some(v), cx);
+            self.status = "Cell changed (Cmd/Ctrl+S saves)".into();
+        }
+        self.tabs[tab]
+            .grid
+            .update(cx, |g, cx| g.focus_handle(cx).focus(window, cx));
+        cx.notify();
+    }
+}

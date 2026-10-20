@@ -10,11 +10,12 @@ MYSQL_IMAGE ?= mysql:8
 UNAME  := $(shell uname -s 2>/dev/null || echo Windows)
 EXE    := $(if $(filter Windows MINGW% MSYS% CYGWIN%,$(UNAME)),.exe,)
 BIN    := target/release/rusty-beaver$(EXE)
+VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 PID    := target/rusty-beaver.pid
 LOG    := target/rusty-beaver.log
 MCP    := python3 scripts/mcp.py
 
-.PHONY: help build release run dev start stop restart status logs test smoke lint fmt mcp-tools screenshots screenshot site \
+.PHONY: help build build-release release run dev start stop restart status logs test smoke lint fmt mcp-tools screenshots screenshot site \
         icons bundle install uninstall db-up db-down docker-ca linux-docker windows-docker clean distclean
 
 help: ## list targets
@@ -23,16 +24,22 @@ help: ## list targets
 build: ## debug build
 	$(CARGO) build
 
-release: ## optimized build (icon embedded on Windows)
+build-release: ## optimized build (icon embedded on Windows)
 	$(CARGO) build --release
 
-run: release ## build and run in the foreground (MCP on http://127.0.0.1:$(PORT)/mcp)
+release: test ## tag the Cargo.toml version (vX.Y.Z) and push it: CI builds the installers
+	@git diff --quiet && git diff --cached --quiet || { echo "commit your changes first"; exit 1; }
+	@! git rev-parse -q --verify refs/tags/v$(VERSION) >/dev/null || { echo "v$(VERSION) is already tagged: bump version in Cargo.toml"; exit 1; }
+	git tag v$(VERSION)
+	git push origin v$(VERSION)
+
+run: build-release ## build and run in the foreground (MCP on http://127.0.0.1:$(PORT)/mcp)
 	RUSTY_BEAVER_MCP_PORT=$(PORT) $(BIN)
 
 dev: ## debug build + run
 	RUSTY_BEAVER_MCP_PORT=$(PORT) $(CARGO) run
 
-start: release ## run in the background (pid in target/, log: make logs)
+start: build-release ## run in the background (pid in target/, log: make logs)
 	@if [ -f $(PID) ] && kill -0 $$(cat $(PID)) 2>/dev/null; then echo "already running (pid $$(cat $(PID)))"; \
 	else RUSTY_BEAVER_MCP_PORT=$(PORT) $(BIN) > $(LOG) 2>&1 & echo $$! > $(PID); echo "started (pid $$(cat $(PID))), MCP: http://127.0.0.1:$(PORT)/mcp"; fi
 
@@ -63,7 +70,7 @@ fmt: ## format
 mcp-tools: ## list the MCP tools of the running app
 	RUSTY_BEAVER_MCP=http://127.0.0.1:$(PORT)/mcp $(MCP) tools
 
-screenshots: release ## feature screenshots + animated tour -> docs/ (run `make db-up` first for PG/MySQL)
+screenshots: build-release ## feature screenshots + animated tour -> docs/ (run `make db-up` first for PG/MySQL)
 	python3 scripts/screenshots.py $(BIN)
 
 screenshot: ## screenshot of the running app via MCP -> target/screenshot.png
@@ -90,7 +97,7 @@ install: bundle ## install (macOS: ~/Applications; Linux: $(PREFIX) + .desktop +
 uninstall: ## remove an installed copy
 	rm -rf $(HOME)/Applications/RustyBeaver.app
 else
-install: release
+install: build-release
 	install -Dm755 $(BIN) $(PREFIX)/bin/rusty-beaver$(EXE)
 	install -Dm644 assets/rusty-beaver.desktop $(PREFIX)/share/applications/rusty-beaver.desktop
 	cp -R assets/hicolor $(PREFIX)/share/icons/

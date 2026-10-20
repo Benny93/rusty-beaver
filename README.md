@@ -93,9 +93,34 @@ macOS: `make bundle` builds `RustyBeaver.app`, and `make install` puts it into `
 
 To test against real servers, `make db-up` starts PostgreSQL on port 55432 and MySQL on port 53306 (user `postgres`/`root`, password `beaver`). `make db-down` stops them.
 
+## Releases
+
+`make release` runs the tests, then tags the version in `Cargo.toml` (`v0.1.0`, …) and pushes the tag. `.github/workflows/release.yml` then builds the installers with [cargo-packager](https://github.com/crabnebula-dev/cargo-packager) and attaches them to a GitHub release:
+
+| Platform | Installer |
+| --- | --- |
+| macOS (Apple Silicon and Intel) | `.dmg` |
+| Windows | NSIS `.exe` (C runtime linked statically, so no VC++ redistributable is needed) |
+| Linux | `.deb` and `.AppImage` |
+
+`cargo packager --release --formats dmg` (or `nsis`, `deb,appimage`) builds the same installers locally into `target/dist/`.
+
+The installers are **unsigned**:
+- **macOS:** Gatekeeper refuses the app on first launch. On macOS 15+ it says "…is damaged and can't be opened", and right-click → Open doesn't help. After dragging it into /Applications, run this once: `xattr -dr com.apple.quarantine "/Applications/Rusty Beaver.app"`.
+- **Windows:** SmartScreen shows "unknown publisher". Click **More info → Run anyway**.
+
+### Publishing updates
+
+`.github/workflows/winget.yml` submits a manifest update to [winget-pkgs](https://github.com/microsoft/winget-pkgs) for every published release (identifier `Benny93.RustyBeaver`). It needs:
+1. A fork of `microsoft/winget-pkgs` under the same GitHub account.
+2. A classic personal access token with the `public_repo` and `workflow` scopes, stored as the repository secret `WINGET_TOKEN`.
+3. A first version submitted by hand (for example with `wingetcreate new <installer url>`). The action builds each update on the existing package, so it only works once that first version is merged.
+
 ## Website
 
-`site/` is the project's GitHub Pages site, including *Beaver Bomber*, a small Bomberman-style game in plain JavaScript (`site/game.js`; `make test` checks its rules). `make site` copies the screenshots, the tour GIF and the icons into `site/assets/`, and then you can open `site/index.html`. To publish it, set the repository's Settings → Pages → Source to "GitHub Actions". `.github/workflows/pages.yml` then deploys `site/` on every push to main/master that touches it.
+`site/` is the project's GitHub Pages site, including *Beaver Bomber*, a small Bomberman-style game in plain JavaScript (`site/game.js`; `make test` checks its rules). `make site` copies the screenshots, the tour GIF and the icons into `site/assets/`, and then you can open `site/index.html`. `.github/workflows/pages.yml` publishes it to GitHub Pages on every push to `main` that changes it, or by hand from the Actions tab. To enable it once, go to Settings → Pages → Source and choose "GitHub Actions". On a free GitHub plan the repository has to be public.
+
+CI (`.github/workflows/ci.yml`) runs the tests and a release build on macOS, Linux and Windows for every push and pull request, and uploads the binaries as artifacts.
 
 ## MCP: let an agent drive it
 

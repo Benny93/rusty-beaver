@@ -1,0 +1,4 @@
+# Windows: link the C runtime statically, so the .exe runs without the VC++ redistributable
+# (release.yml checks for stray VCRUNTIME imports). cc-built C code (SQLite, …) follows.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

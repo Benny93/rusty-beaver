@@ -48,3 +48,13 @@ codegen-units = 4
 [profile.release-cross]
 inherits = "release"
 debug-assertions = true
+
+# Installers (.dmg, NSIS .exe, .deb, .AppImage): `cargo packager --release`, run by
+# .github/workflows/release.yml for every v* tag (`make release`).
+[package.metadata.packager]
+product-name = "Rusty Beaver"
+identifier = "io.github.benny93.rustybeaver"
+category = "DeveloperTool"
+before-packaging-command = "cargo build --release --locked"
+out-dir = "target/dist"
+icons = ["assets/rusty-beaver.icns", "assets/rusty-beaver.ico", "assets/icon.png"]

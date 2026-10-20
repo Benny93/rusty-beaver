@@ -1,0 +1,71 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, formats: dmg } # Apple Silicon
+          - { os: macos-15-intel, formats: dmg } # Intel (macos-13 is retired)
+          - { os: windows-latest, formats: nsis }
+          - { os: ubuntu-24.04, formats: "deb,appimage" } # jammy's pipewire 0.3.59 headers do not compile xcap's libspa 0.10
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        # gpui (X11/Wayland/Vulkan/fonts/audio) + xcap (xcb randr, PipeWire via bindgen -> libclang); libfuse2 for AppImage
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev \
+            libxcb1-dev libxcb-randr0-dev libfontconfig-dev libfreetype-dev libasound2-dev libzstd-dev \
+            libpipewire-0.3-dev libgbm-dev libegl1-mesa-dev libdbus-1-dev libclang-dev clang pkg-config libfuse2
+      - run: cargo install cargo-packager --locked
+      - run: cargo packager --release --formats ${{ matrix.formats }}
+      # Gate the release on the packaged exe being self-contained: a stray CRT DLL import
+      # installs fine but only fails later in winget's validator (0xC0000135).
+      # .cargo/config.toml links the CRT statically for this.
+      - name: Verify no VC++ runtime import
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bytes = [System.IO.File]::ReadAllBytes("$env:GITHUB_WORKSPACE\target\release\rusty-beaver.exe")
+          $text = [System.Text.Encoding]::ASCII.GetString($bytes)
+          foreach ($dll in @('VCRUNTIME140', 'MSVCP140', 'CONCRT140')) {
+            if ($text.IndexOf($dll, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+              Write-Error "rusty-beaver.exe imports $dll.dll - the exe needs the VC++ redistributable"
+              exit 1
+            }
+          }
+          Write-Output "no VC++ runtime imports"
+      # Installers are intentionally unsigned (no Apple Developer / code-signing cert).
+      # macOS Gatekeeper blocks the app on first launch; the release body links the workaround.
+      - uses: softprops/action-gh-release@v2
+        with:
+          overwrite: true
+          body: |
+            ## First launch
+
+            These installers are **unsigned and not notarized**.
+
+            - **macOS**: Gatekeeper will refuse the app (on macOS 15+ it says "…is damaged and can't be opened"; right-click → Open does not bypass it). After dragging the app into /Applications, run once:
+              ```
+              xattr -dr com.apple.quarantine "/Applications/Rusty Beaver.app"
+              ```
+            - **Windows**: SmartScreen shows "unknown publisher" — click **More info → Run anyway**.
+
+            See the README for details.
+          files: |
+            target/dist/*.dmg
+            target/dist/*.exe
+            target/dist/*.deb
+            target/dist/*.AppImage

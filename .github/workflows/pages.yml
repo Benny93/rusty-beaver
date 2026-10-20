@@ -1,10 +1,9 @@
-# Publishes site/ to GitHub Pages. In the repository: Settings → Pages → Source: GitHub Actions.
 name: Pages
-
 on:
   push:
-    branches: [main, master]
-    paths: [site/**, docs/**, assets/**, .github/workflows/pages.yml]
+    branches: [main]
+    # site/ plus where `make site` copies the screenshots, tour GIF and icons from
+    paths: ["site/**", "docs/**", "assets/**", "Makefile", ".github/workflows/pages.yml"]
   workflow_dispatch:
 
 permissions:
@@ -17,18 +16,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Copy screenshots and icons into the site
+        run: make site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
   deploy:
+    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Copy screenshots and icons into the site
-        run: make site
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: site
       - id: deployment
         uses: actions/deploy-pages@v4

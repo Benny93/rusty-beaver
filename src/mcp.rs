@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
-pub const DEFAULT_PORT: u16 = 7878;
+pub const DEFAULT_PORT: u16 = 7979;
 
 /// A tool call for the UI thread: the command name, its arguments and where to reply.
 pub struct Call {
@@ -239,6 +239,20 @@ pub struct EditConnArg {
     pub production: Option<bool>,
     /// Read-only: refuse statements that change data or schema.
     pub read_only: Option<bool>,
+    /// How credentials are obtained: password (kept in the OS keychain), vault_kv (user +
+    /// password from a field of a Vault KV secret) or vault_dynamic (Vault database secrets engine).
+    pub auth: Option<String>,
+    /// TLS (PostgreSQL, MySQL): prefer (default: TLS if offered), disable, require, or verify_full
+    /// (certificate checked against the OS trust store).
+    pub ssl: Option<String>,
+    /// vault_kv: the secret path (secret/data/team/db); vault_dynamic: database/creds/<role>.
+    pub vault_path: Option<String>,
+    /// vault_kv: the field holding the password (default "password").
+    pub vault_field: Option<String>,
+    /// Vault address (default VAULT_ADDR) / OIDC role / OIDC auth mount (default oidc).
+    pub vault_addr: Option<String>,
+    pub vault_role: Option<String>,
+    pub vault_mount: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -265,8 +279,10 @@ pub struct RecordArg {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct DialogArg {
-    /// true opens the New Connection dialog, false closes it.
+    /// true opens the dialog, false closes it.
     pub open: bool,
+    /// Open the Edit Connection dialog for this connection instead of New Connection.
+    pub connection: Option<String>,
 }
 
 impl Tools {
@@ -580,7 +596,7 @@ impl Tools {
         &self,
         Parameters(a): Parameters<EditConnArg>,
     ) -> Result<CallToolResult, McpError> {
-        self.ui("edit_connection", json!({ "connection": a.connection, "name": a.name, "host": a.host, "port": a.port, "database": a.database, "user": a.user, "password": a.password, "production": a.production, "read_only": a.read_only })).await
+        self.ui("edit_connection", json!({ "connection": a.connection, "name": a.name, "host": a.host, "port": a.port, "database": a.database, "user": a.user, "password": a.password, "production": a.production, "read_only": a.read_only, "auth": a.auth, "ssl": a.ssl, "vault_path": a.vault_path, "vault_field": a.vault_field, "vault_addr": a.vault_addr, "vault_role": a.vault_role, "vault_mount": a.vault_mount })).await
     }
 
     #[tool(
@@ -767,8 +783,11 @@ impl Tools {
         &self,
         Parameters(a): Parameters<DialogArg>,
     ) -> Result<CallToolResult, McpError> {
-        self.ui("connection_dialog", json!({ "open": a.open }))
-            .await
+        self.ui(
+            "connection_dialog",
+            json!({ "open": a.open, "connection": a.connection }),
+        )
+        .await
     }
 
     #[tool(

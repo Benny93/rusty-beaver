@@ -3,7 +3,7 @@
 
 CARGO  ?= cargo
 PREFIX ?= $(HOME)/.local
-PORT   ?= 7878
+PORT   ?= 7979
 IMAGE  ?= rust:1-bookworm
 PG_IMAGE    ?= postgres:17-alpine
 MYSQL_IMAGE ?= mysql:8

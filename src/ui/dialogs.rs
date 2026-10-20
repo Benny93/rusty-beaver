@@ -122,16 +122,8 @@ impl AppView {
             .and_then(|id| self.conn_ix(id))
             .map(|i| self.conns[i].cfg.clone())
             .unwrap_or(ConnConfig {
-                name: String::new(),
-                driver: Driver::Sqlite,
                 host: "localhost".into(),
-                port: 0,
-                database: String::new(),
-                user: String::new(),
-                password: String::new(),
-                manual_commit: false,
-                production: false,
-                read_only: false,
+                ..Default::default()
             });
         let port = if c.port == 0 {
             String::new()
@@ -151,6 +143,27 @@ impl AppView {
                     .masked(true)
                     .default_value(c.password.clone())
             }),
+            auth: c.auth,
+            ssl: c.ssl,
+            vault_path: input(
+                if c.auth == Auth::VaultDynamic {
+                    "database/creds/readonly"
+                } else {
+                    "secret/data/team/db"
+                },
+                &c.vault_path,
+                window,
+                cx,
+            ),
+            vault_field: input("password", &c.vault_field, window, cx),
+            vault_addr: input(
+                &std::env::var("VAULT_ADDR").unwrap_or_else(|_| "https://vault.example.com".into()),
+                &c.vault_addr,
+                window,
+                cx,
+            ),
+            vault_role: input("default", &c.vault_role, window, cx),
+            vault_mount: input("oidc", &c.vault_mount, window, cx),
             test: None,
             testing: false,
             editing: edit,
@@ -180,6 +193,7 @@ impl AppView {
         let ix = self.conn_ix(id).ok_or("connection is gone")?;
         let mut cfg = cfg;
         cfg.manual_commit = self.conns[ix].cfg.manual_commit;
+        cfg.id = self.conns[ix].cfg.id.clone();
         let old = std::mem::replace(&mut self.conns[ix].cfg, cfg.clone());
         let renamed_only = ConnConfig {
             name: cfg.name.clone(),
@@ -206,8 +220,9 @@ impl AppView {
     pub(super) fn dialog_config(&self, cx: &App) -> Option<ConnConfig> {
         let d = self.dialog.as_ref()?;
         let v = |e: &Entity<InputState>| e.read(cx).value().trim().to_string();
+        let sqlite = d.driver == Driver::Sqlite;
         let mut database = v(&d.database);
-        if database.is_empty() && d.driver == Driver::Sqlite {
+        if database.is_empty() && sqlite {
             database = dirs::home_dir()
                 .unwrap_or_default()
                 .join("database.db")
@@ -233,11 +248,47 @@ impl AppView {
             host: v(&d.host),
             port: v(&d.port).parse().unwrap_or(d.driver.default_port()),
             database,
-            user: v(&d.user),
-            password: d.password.read(cx).value().to_string(),
-            manual_commit: false,
+            // Each mode keeps only its own fields.
+            user: if d.auth == Auth::VaultDynamic || sqlite {
+                String::new()
+            } else {
+                v(&d.user)
+            },
+            password: if d.auth == Auth::Password && !sqlite {
+                d.password.read(cx).value().to_string()
+            } else {
+                String::new()
+            },
+            auth: if sqlite { Auth::Password } else { d.auth },
+            ssl: d.ssl,
+            vault_path: if d.auth.is_vault() && !sqlite {
+                v(&d.vault_path)
+            } else {
+                String::new()
+            },
+            vault_field: if d.auth == Auth::VaultKv && !sqlite {
+                v(&d.vault_field)
+            } else {
+                String::new()
+            },
             production: d.production,
             read_only: d.read_only,
+            vault_addr: if d.auth.is_vault() {
+                v(&d.vault_addr)
+            } else {
+                String::new()
+            },
+            vault_role: if d.auth.is_vault() {
+                v(&d.vault_role)
+            } else {
+                String::new()
+            },
+            vault_mount: if d.auth.is_vault() {
+                v(&d.vault_mount)
+            } else {
+                String::new()
+            },
+            ..Default::default()
         })
     }
 
@@ -256,6 +307,12 @@ impl AppView {
         {
             return Err(format!("a connection named {:?} exists", cfg.name));
         }
+        let mut cfg = cfg;
+        crate::vault::upgrade_legacy(&mut cfg);
+        if cfg.id.is_empty() {
+            cfg.id = crate::secrets::new_id();
+        }
+        cfg.keychain = false;
         let id = self.next_id;
         self.next_id += 1;
         self.status = format!("Added connection {}", cfg.name);
@@ -280,6 +337,9 @@ impl AppView {
     }
 
     pub(super) fn delete_connection(&mut self, id: u64, cx: &mut Context<Self>) {
+        if let Some(c) = self.conns.iter().find(|c| c.id == id) {
+            db::forget_password(&c.cfg);
+        }
         self.conns.retain(|c| c.id != id);
         self.tabs.retain(|t| t.conn != id);
         self.active = self.active.min(self.tabs.len().saturating_sub(1));
@@ -326,9 +386,86 @@ impl AppView {
                 cx.notify();
             }))
         }));
+        let section = |title: &str| {
+            div()
+                .pt_1()
+                .text_xs()
+                .font_weight(FontWeight::BOLD)
+                .text_color(t.muted_foreground)
+                .child(title.to_uppercase())
+        };
+        let note = |text: &str| {
+            div()
+                .text_xs()
+                .text_color(t.muted_foreground)
+                .child(text.to_string())
+        };
+        let auth_modes = h_flex().gap_1().children(Auth::ALL.map(|mode| {
+            pick(
+                Button::new(SharedString::from(format!("auth-{mode:?}"))).small(),
+                d.auth == mode,
+            )
+            .label(mode.label())
+            .on_click(cx.listener(move |v, _, w, cx| {
+                if let Some(d) = v.dialog.as_mut() {
+                    d.auth = mode;
+                    d.test = None;
+                    let hint = if mode == Auth::VaultDynamic {
+                        "database/creds/readonly"
+                    } else {
+                        "secret/data/team/db"
+                    };
+                    d.vault_path
+                        .update(cx, |i, cx| i.set_placeholder(hint, w, cx));
+                }
+                cx.notify();
+            }))
+        }));
+        let tls_modes = h_flex().gap_1().children(db::Ssl::ALL.map(|mode| {
+            pick(
+                Button::new(SharedString::from(format!("ssl-{mode:?}"))).small(),
+                d.ssl == mode,
+            )
+            .label(mode.label())
+            .on_click(cx.listener(move |v, _, _, cx| {
+                if let Some(d) = v.dialog.as_mut() {
+                    d.ssl = mode;
+                    d.test = None;
+                }
+                cx.notify();
+            }))
+        }));
+        let tls_help = match d.ssl {
+            db::Ssl::Prefer => {
+                "TLS when the server offers it, else plain. The certificate is not checked."
+            }
+            db::Ssl::Require => "TLS or fail. The certificate is not checked.",
+            db::Ssl::VerifyFull => {
+                "TLS, and the certificate must be trusted by the system and match the host."
+            }
+            db::Ssl::Disable => {
+                "Plain TCP, no encryption. Poolers like Supavisor then need the tenant in the user name."
+            }
+        };
+        let auth_help = match d.auth {
+            Auth::Password if crate::secrets::enabled() => format!(
+                "Type the password once: it is saved in the {}, not in the connections file.",
+                db::keychain_name()
+            ),
+            Auth::Password => {
+                "Keychain is off (RUSTY_BEAVER_KEYCHAIN=off): the password is saved in the connections file.".into()
+            }
+            Auth::VaultKv => "The password is read from a field of a Vault KV secret on every connect; nothing is saved locally.".into(),
+            Auth::VaultDynamic => "Vault's database secrets engine creates a temporary user and password on every connect.".into(),
+        };
+        let auth_help = auth_help.as_str();
         let test = d.test.clone().map(|r| match r {
             Ok(m) => div().text_sm().text_color(t.success).child(m),
-            Err(e) => div().text_sm().text_color(t.danger).child(e),
+            Err(e) => h_flex()
+                .gap_1()
+                .items_start()
+                .child(self.copy_button("copy-dialog-error", e.clone(), cx))
+                .child(div().text_sm().text_color(t.danger).child(e)),
         });
         Some(
             div()
@@ -343,7 +480,8 @@ impl AppView {
                 .child(
                     v_flex()
                         .id("dialog")
-                        .w(px(520.))
+                        .w(px(560.))
+                        .max_h(relative(0.92))
                         .gap_3()
                         .p_5()
                         .rounded_lg()
@@ -363,7 +501,71 @@ impl AppView {
                                     },
                                 )),
                         )
+                        // Only the form scrolls: title and buttons stay in view.
+                        .child(v_flex().id("dialog-form").flex_1().min_h_0().overflow_y_scroll().gap_3()
+                        .child(section("Connection"))
                         .child(drivers)
+                        .child(field("Connection name", &d.name))
+                        .when(!sqlite, |c| {
+                            c.child(
+                                h_flex()
+                                    .gap_2()
+                                    .child(div().flex_1().child(field("Host", &d.host)))
+                                    .child(div().w(px(110.)).child(field("Port", &d.port))),
+                            )
+                        })
+                        .child(field(
+                            if sqlite {
+                                "Database file (created if missing)"
+                            } else {
+                                "Database"
+                            },
+                            &d.database,
+                        ))
+                        .when(!sqlite, |c| {
+                            c.child(
+                                v_flex()
+                                    .gap_1()
+                                    .child(div().text_sm().text_color(t.muted_foreground).child("TLS"))
+                                    .child(tls_modes),
+                            )
+                            .child(note(tls_help))
+                        })
+                        .when(!sqlite, |c| {
+                            c.child(section("Authentication"))
+                                .child(auth_modes)
+                                .child(note(auth_help))
+                                .map(|c| match d.auth {
+                                    Auth::Password => c.child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(div().flex_1().child(field("Username", &d.user)))
+                                            .child(div().flex_1().child(field("Password", &d.password))),
+                                    ),
+                                    Auth::VaultKv => c
+                                        .child(field("Username", &d.user))
+                                        .child(
+                                            h_flex()
+                                                .gap_2()
+                                                .child(div().flex_1().child(field("Secret path", &d.vault_path)))
+                                                .child(div().w(px(130.)).child(field("Field", &d.vault_field))),
+                                        ),
+                                    Auth::VaultDynamic => c.child(field("Credentials path", &d.vault_path)),
+                                })
+                                .when(d.auth.is_vault(), |c| {
+                                    c.child(
+                                        h_flex()
+                                            .gap_2()
+                                            .child(div().flex_1().child(field("Vault address", &d.vault_addr)))
+                                            .child(div().w(px(120.)).child(field("OIDC role", &d.vault_role)))
+                                            .child(div().w(px(90.)).child(field("Auth mount", &d.vault_mount))),
+                                    )
+                                        .child(note(
+                                            "Sign-in: reuses your `vault login` token (VAULT_TOKEN, ~/.vault-token), else opens the browser for OpenID Connect like `vault login -method=oidc`. Role and mount are optional.",
+                                        ))
+                                })
+                        })
+                        .child(section("Safety"))
                         .child(
                             h_flex()
                                 .gap_2()
@@ -414,37 +616,7 @@ impl AppView {
                                         })),
                                 ),
                         )
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(t.muted_foreground)
-                                .child("Production asks before changes; read-only refuses them."),
-                        )
-                        .child(field("Connection name", &d.name))
-                        .when(!sqlite, |c| {
-                            c.child(
-                                h_flex()
-                                    .gap_2()
-                                    .child(div().flex_1().child(field("Host", &d.host)))
-                                    .child(div().w(px(110.)).child(field("Port", &d.port))),
-                            )
-                        })
-                        .child(field(
-                            if sqlite {
-                                "Database file (created if missing)"
-                            } else {
-                                "Database"
-                            },
-                            &d.database,
-                        ))
-                        .when(!sqlite, |c| {
-                            c.child(
-                                h_flex()
-                                    .gap_2()
-                                    .child(div().flex_1().child(field("Username", &d.user)))
-                                    .child(div().flex_1().child(field("Password", &d.password))),
-                            )
-                        })
+                        .child(note("Production asks before changes; read-only refuses them.")))
                         .children(test)
                         .child(
                             h_flex()

@@ -221,7 +221,7 @@ def main():
     port = os.environ.get("RUSTY_BEAVER_MCP_PORT", "7879")
     mcp.URL = f"http://127.0.0.1:{port}/mcp"
     # HOME: the app shows paths under it (default database file); keep the user's name out.
-    env = dict(os.environ, RUSTY_BEAVER_CONFIG=cfg, RUSTY_BEAVER_MCP_PORT=port, RUSTY_BEAVER_BACKGROUND="1", HOME="/Users/beaver", RUSTY_BEAVER_HISTORY=os.path.join(tmp, "history.jsonl"), RUSTY_BEAVER_SESSION=os.path.join(tmp, "session.json"))
+    env = dict(os.environ, RUSTY_BEAVER_CONFIG=cfg, RUSTY_BEAVER_MCP_PORT=port, RUSTY_BEAVER_BACKGROUND="1", RUSTY_BEAVER_KEYCHAIN="off", HOME="/Users/beaver", RUSTY_BEAVER_HISTORY=os.path.join(tmp, "history.jsonl"), RUSTY_BEAVER_SESSION=os.path.join(tmp, "session.json"))
     proc = subprocess.Popen([binary], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         wait_for_app(proc)

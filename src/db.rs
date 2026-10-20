@@ -1,13 +1,17 @@
 //! Database drivers (SQLite, PostgreSQL, MySQL) behind one tiny text-only API.
 //! Every value comes back as display text, so the grid, CSV export and MCP all share one shape.
 
+use crate::secrets;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Driver {
+    #[default]
     Sqlite,
     Postgres,
     Mysql,
@@ -255,9 +259,93 @@ impl Changes {
     }
 }
 
+/// How a connection gets its credentials.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Auth {
+    /// User name and password; the password is kept in the OS keychain.
+    #[default]
+    Password,
+    /// User name, and the password read from one field of a Vault KV secret.
+    VaultKv,
+    /// Vault's database secrets engine creates a temporary user name and password.
+    VaultDynamic,
+}
+
+impl Auth {
+    pub const ALL: [Auth; 3] = [Auth::Password, Auth::VaultKv, Auth::VaultDynamic];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Auth::Password => "Password",
+            Auth::VaultKv => "Vault secret",
+            Auth::VaultDynamic => "Vault dynamic credentials",
+        }
+    }
+
+    pub fn is_vault(self) -> bool {
+        self != Auth::Password
+    }
+
+    pub fn parse(s: &str) -> Option<Auth> {
+        Auth::ALL.into_iter().find(|a| {
+            serde_json::to_value(a)
+                .ok()
+                .and_then(|v| v.as_str().map(|v| v == s))
+                .unwrap_or(false)
+        })
+    }
+}
+
+/// TLS for PostgreSQL connections, like libpq's sslmode.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum Ssl {
+    /// TLS when the server offers it (sends the host name, which poolers like Supavisor need).
+    #[default]
+    Prefer,
+    /// Plain TCP.
+    Disable,
+    /// TLS or fail; the certificate is not checked.
+    Require,
+    /// TLS, and the certificate must be trusted by the OS and match the host name.
+    VerifyFull,
+}
+
+impl Ssl {
+    pub const ALL: [Ssl; 4] = [Ssl::Prefer, Ssl::Require, Ssl::VerifyFull, Ssl::Disable];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Ssl::Prefer => "Prefer",
+            Ssl::Disable => "Off",
+            Ssl::Require => "Require",
+            Ssl::VerifyFull => "Verify certificate",
+        }
+    }
+}
+
+/// The OS secure storage, as users know it.
+pub fn keychain_name() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "macOS Keychain"
+    } else if cfg!(windows) {
+        "Windows Credential Manager"
+    } else {
+        "system keyring (Secret Service)"
+    }
+}
+
 /// A saved connection, as in DBeaver's Database Navigator.
-#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ConnConfig {
+    /// Stable id; names the connection's entry in the OS keychain.
+    #[serde(default)]
+    pub id: String,
     pub name: String,
     pub driver: Driver,
     /// Host name (PostgreSQL / MySQL).
@@ -270,9 +358,34 @@ pub struct ConnConfig {
     pub database: String,
     #[serde(default)]
     pub user: String,
-    // ponytail: stored in plain text like DBeaver's default; OS keychain when it matters
-    #[serde(default)]
+    /// For `auth: password`. Saved in the OS keychain, not in connections.json.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub password: String,
+    /// password (default), vault_kv or vault_dynamic.
+    #[serde(default)]
+    pub auth: Auth,
+    /// TLS (PostgreSQL, MySQL): prefer (default), disable, require or verify_full.
+    #[serde(default)]
+    pub ssl: Ssl,
+    /// Vault path: the KV secret (`secret/data/team/db`) or the credentials
+    /// (`database/creds/<role>`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vault_path: String,
+    /// For vault_kv: the field holding the password; empty: "password".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vault_field: String,
+    /// The password is in the OS keychain (connections.json holds none).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keychain: bool,
+    /// Vault address for the Vault modes; empty: VAULT_ADDR.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vault_addr: String,
+    /// Vault OIDC auth mount; empty: "oidc".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vault_mount: String,
+    /// Vault OIDC role; empty: the mount's default role.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub vault_role: String,
     /// Statements run in a transaction that stays open until Commit / Rollback.
     #[serde(default)]
     pub manual_commit: bool,
@@ -305,27 +418,20 @@ pub enum Session {
     Mysql(mysql::Conn),
 }
 
+/// Open a session. Vault credentials are fetched first (which may open the browser
+/// for the sign-in); callers that need the resolved credentials call `vault::resolve` themselves.
 pub fn connect(c: &ConnConfig) -> Result<Session, String> {
+    let c = &crate::vault::resolve(c, &crate::vault::open_browser)?;
     let e = |e: &dyn std::fmt::Display| e.to_string();
     Ok(match c.driver {
         Driver::Sqlite => {
             Session::Sqlite(rusqlite::Connection::open(&c.database).map_err(|x| e(&x))?)
         }
-        Driver::Postgres => {
-            let mut cfg = postgres::Config::new();
-            cfg.host(if c.host.is_empty() {
-                "localhost"
-            } else {
-                &c.host
-            })
-            .port(if c.port == 0 { 5432 } else { c.port })
-            .user(&c.user)
-            .password(&c.password)
-            .dbname(&c.database)
-            .connect_timeout(Duration::from_secs(10));
-            // ponytail: no TLS; add postgres-native-tls when remote servers need it
-            Session::Postgres(cfg.connect(postgres::NoTls).map_err(pg_err)?)
-        }
+        Driver::Postgres => Session::Postgres(
+            pg_config(c)
+                .connect(pg_tls(c.ssl == Ssl::VerifyFull)?)
+                .map_err(pg_err)?,
+        ),
         Driver::Mysql => {
             let opts = mysql::OptsBuilder::new()
                 .ip_or_hostname(Some(if c.host.is_empty() {
@@ -338,7 +444,27 @@ pub fn connect(c: &ConnConfig) -> Result<Session, String> {
                 .pass(Some(&c.password))
                 .db_name((!c.database.is_empty()).then_some(&c.database))
                 .tcp_connect_timeout(Some(Duration::from_secs(10)));
-            Session::Mysql(mysql::Conn::new(opts).map_err(|x| e(&x))?)
+            let tls = match c.ssl {
+                Ssl::Disable => None,
+                // Encrypted, certificate not checked (like Postgres prefer/require).
+                Ssl::Prefer | Ssl::Require => Some(
+                    mysql::SslOpts::default()
+                        .with_danger_accept_invalid_certs(true)
+                        .with_danger_skip_domain_validation(true),
+                ),
+                Ssl::VerifyFull => {
+                    Some(mysql::SslOpts::default().with_root_cert_path(Some(os_roots_pem()?)))
+                }
+            };
+            let conn = match mysql::Conn::new(opts.clone().ssl_opts(tls)) {
+                Err(mysql::Error::DriverError(mysql::DriverError::TlsNotSupported))
+                    if c.ssl == Ssl::Prefer =>
+                {
+                    mysql::Conn::new(opts)
+                }
+                r => r,
+            };
+            Session::Mysql(conn.map_err(|x| e(&x))?)
         }
     })
 }
@@ -367,7 +493,7 @@ impl Canceller {
                 h.interrupt();
                 Ok(())
             }
-            Canceller::Postgres(t) => t.cancel_query(postgres::NoTls).map_err(|e| e.to_string()),
+            Canceller::Postgres(t) => t.cancel_query(pg_tls(false)?).map_err(|e| e.to_string()),
             Canceller::Mysql(cfg, id) => {
                 connect(cfg)?.query(&format!("KILL QUERY {id}")).map(|_| ())
             }
@@ -695,6 +821,132 @@ fn pg_query(c: &mut postgres::Client, sql: &str) -> Result<Vec<QueryResult>, Str
     Ok(out)
 }
 
+/// Startup parameters for PostgreSQL. Empty fields are left out: plain PostgreSQL ignores an
+/// empty `database` (it falls back to the user name), but poolers such as Supavisor reject the
+/// whole startup message ("bad_startup_payload").
+fn pg_config(c: &ConnConfig) -> postgres::Config {
+    let mut cfg = postgres::Config::new();
+    cfg.host(if c.host.is_empty() {
+        "localhost"
+    } else {
+        &c.host
+    })
+    .port(if c.port == 0 { 5432 } else { c.port })
+    .connect_timeout(Duration::from_secs(10));
+    if !c.user.is_empty() {
+        cfg.user(&c.user);
+    }
+    if !c.password.is_empty() {
+        cfg.password(&c.password);
+    }
+    if !c.database.is_empty() {
+        cfg.dbname(&c.database);
+    }
+    cfg.ssl_mode(match c.ssl {
+        Ssl::Disable => postgres::config::SslMode::Disable,
+        Ssl::Prefer => postgres::config::SslMode::Prefer,
+        Ssl::Require | Ssl::VerifyFull => postgres::config::SslMode::Require,
+    });
+    cfg
+}
+
+/// The CAs the OS trusts, as a PEM file: the MySQL driver checks certificates only against its
+/// bundled public CAs plus such a file, so company CAs installed on the machine work too.
+fn os_roots_pem() -> Result<std::path::PathBuf, String> {
+    use base64::Engine as _;
+    static PEM: std::sync::OnceLock<Result<std::path::PathBuf, String>> =
+        std::sync::OnceLock::new();
+    PEM.get_or_init(|| {
+        let mut out = String::new();
+        let mut check = rustls::RootCertStore::empty();
+        for cert in rustls_native_certs::load_native_certs().certs {
+            // The driver fails on any certificate rustls can't use: leave those out.
+            if check.add(cert.clone()).is_ok() {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(cert.as_ref());
+                out.push_str("-----BEGIN CERTIFICATE-----\n");
+                for line in b64.as_bytes().chunks(64) {
+                    out.push_str(std::str::from_utf8(line).unwrap());
+                    out.push('\n');
+                }
+                out.push_str("-----END CERTIFICATE-----\n");
+            }
+        }
+        let path = std::env::temp_dir().join("rusty-beaver-os-roots.pem");
+        std::fs::write(&path, out).map_err(|e| format!("system CAs: {e}"))?;
+        Ok(path)
+    })
+    .clone()
+}
+
+/// rustls for Postgres: with `verify`, the OS trust store checks the certificate; without, like
+/// libpq's sslmode=prefer/require, the connection is encrypted but the certificate not checked.
+fn pg_tls(verify: bool) -> Result<tokio_postgres_rustls::MakeRustlsConnect, String> {
+    use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+    use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+    use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct NoVerify(Arc<rustls::crypto::CryptoProvider>);
+    impl ServerCertVerifier for NoVerify {
+        fn verify_server_cert(
+            &self,
+            _: &CertificateDer,
+            _: &[CertificateDer],
+            _: &ServerName,
+            _: &[u8],
+            _: UnixTime,
+        ) -> Result<ServerCertVerified, rustls::Error> {
+            Ok(ServerCertVerified::assertion())
+        }
+        fn verify_tls12_signature(
+            &self,
+            m: &[u8],
+            c: &CertificateDer,
+            d: &rustls::DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            rustls::crypto::verify_tls12_signature(
+                m,
+                c,
+                d,
+                &self.0.signature_verification_algorithms,
+            )
+        }
+        fn verify_tls13_signature(
+            &self,
+            m: &[u8],
+            c: &CertificateDer,
+            d: &rustls::DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, rustls::Error> {
+            rustls::crypto::verify_tls13_signature(
+                m,
+                c,
+                d,
+                &self.0.signature_verification_algorithms,
+            )
+        }
+        fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+            self.0.signature_verification_algorithms.supported_schemes()
+        }
+    }
+
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let builder = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .map_err(|e| e.to_string())?;
+    let config = if verify {
+        use rustls_platform_verifier::BuilderVerifierExt;
+        builder
+            .with_platform_verifier()
+            .map_err(|e| e.to_string())?
+    } else {
+        builder
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerify(provider)))
+    }
+    .with_no_client_auth();
+    Ok(tokio_postgres_rustls::MakeRustlsConnect::new(config))
+}
+
 /// postgres::Error displays as "db error": show the server's message, detail and hint.
 fn pg_err(e: postgres::Error) -> String {
     match e.as_db_error() {
@@ -708,7 +960,19 @@ fn pg_err(e: postgres::Error) -> String {
             }
             s
         }
-        None => e.to_string(),
+        // "error connecting to server" alone hides why: add the causes ("Connection refused").
+        None => {
+            let mut s = e.to_string();
+            let mut cause = std::error::Error::source(&e);
+            while let Some(c) = cause {
+                let c_s = c.to_string();
+                if !s.contains(&c_s) {
+                    s += &format!(": {c_s}");
+                }
+                cause = c.source();
+            }
+            s
+        }
     }
 }
 
@@ -767,35 +1031,115 @@ fn connections_path() -> PathBuf {
 }
 
 /// Saved connections; on first start a bundled demo SQLite database.
-pub fn load_connections() -> Vec<ConnConfig> {
-    if let Ok(text) = std::fs::read_to_string(connections_path())
-        && let Ok(v) = serde_json::from_str(&text)
-    {
-        return v;
-    }
-    match demo_db() {
-        Ok(path) => vec![ConnConfig {
-            name: "Beaver Demo (SQLite)".into(),
-            driver: Driver::Sqlite,
-            host: String::new(),
-            port: 0,
-            database: path.to_string_lossy().into_owned(),
-            user: String::new(),
-            password: String::new(),
-            manual_commit: false,
-            production: false,
-            read_only: false,
-        }],
-        Err(_) => Vec::new(),
-    }
+/// Passwords this session already has in the keychain, per connection id: saves skip
+/// unchanged ones (each keychain write can mean a system prompt).
+static IN_KEYCHAIN: std::sync::Mutex<Option<std::collections::HashMap<String, String>>> =
+    std::sync::Mutex::new(None);
+
+fn keychain_has(id: &str, password: Option<&str>) -> bool {
+    let k = IN_KEYCHAIN.lock().unwrap();
+    k.as_ref()
+        .and_then(|m| m.get(id))
+        .is_some_and(|p| password.is_none_or(|q| p == q))
 }
 
-pub fn save_connections(list: &[ConnConfig]) -> Result<(), String> {
+fn keychain_note(id: &str, password: Option<&str>) {
+    let mut k = IN_KEYCHAIN.lock().unwrap();
+    let m = k.get_or_insert_with(Default::default);
+    match password {
+        Some(p) => m.insert(id.to_string(), p.to_string()),
+        None => m.remove(id),
+    };
+}
+
+/// Saved connections, passwords read back from the keychain; on first start a bundled demo
+/// SQLite database. The flag says the file should be saved again (new ids, or plain-text
+/// passwords to move into the keychain).
+pub fn load_connections() -> (Vec<ConnConfig>, bool) {
+    let mut list: Vec<ConnConfig> = match std::fs::read_to_string(connections_path())
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+    {
+        Some(v) => v,
+        None => {
+            return match demo_db() {
+                Ok(path) => (
+                    vec![ConnConfig {
+                        name: "Beaver Demo (SQLite)".into(),
+                        database: path.to_string_lossy().into_owned(),
+                        id: secrets::new_id(),
+                        ..Default::default()
+                    }],
+                    true,
+                ),
+                Err(_) => (Vec::new(), false),
+            };
+        }
+    };
+    let mut resave = false;
+    for c in &mut list {
+        if c.id.is_empty() {
+            c.id = secrets::new_id();
+            resave = true;
+        }
+        if c.keychain {
+            match secrets::load(&c.id) {
+                Ok(Some(p)) => {
+                    keychain_note(&c.id, Some(&p));
+                    c.password = p;
+                }
+                Ok(None) => eprintln!("{}: no password in the system keychain", c.name),
+                Err(e) => eprintln!("{}: could not read the system keychain: {e}", c.name),
+            }
+        } else if crate::vault::upgrade_legacy(c) {
+            resave = true; // `vault:` in the password field, from before the explicit modes
+        } else if secrets::enabled() && c.auth == Auth::Password && !c.password.is_empty() {
+            resave = true; // a plain-text password from before: move it into the keychain
+        }
+    }
+    (list, resave)
+}
+
+/// Save connections. Passwords go into the OS keychain and connections.json keeps none; Vault
+/// references are no secrets and stay in the file. Returns warnings for passwords that had to
+/// stay in the file because the keychain is not available.
+pub fn save_connections(list: &[ConnConfig]) -> Result<Vec<String>, String> {
+    let mut warnings = vec![];
+    let file: Vec<ConnConfig> = list
+        .iter()
+        .map(|c| {
+            let mut f = c.clone();
+            f.keychain = false;
+            let secret = c.auth == Auth::Password && !c.password.is_empty();
+            if secrets::enabled() && secret {
+                let stored = keychain_has(&c.id, Some(&c.password)) || secrets::store(&c.id, &c.password).inspect(|_| keychain_note(&c.id, Some(&c.password))).inspect_err(|e| warnings.push(format!("{}: the system keychain is not available ({e}); its password stays in connections.json", c.name))).is_ok();
+                if stored {
+                    f.password.clear();
+                    f.keychain = true;
+                }
+            } else if secrets::enabled() && keychain_has(&c.id, None) {
+                // no longer a stored password (now empty or a Vault reference)
+                secrets::delete(&c.id);
+                keychain_note(&c.id, None);
+            }
+            f
+        })
+        .collect();
     let path = connections_path();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&path, serde_json::to_string_pretty(list).unwrap()).map_err(|e| e.to_string())
+    std::fs::write(&path, serde_json::to_string_pretty(&file).unwrap())
+        .map_err(|e| e.to_string())?;
+    Ok(warnings)
+}
+
+/// A deleted connection's keychain entry goes with it.
+pub fn forget_password(c: &ConnConfig) {
+    if secrets::enabled() && !c.id.is_empty() {
+        secrets::delete(&c.id);
+        keychain_note(&c.id, None);
+    }
 }
 
 /// A small demo database so the app has something to show out of the box.
@@ -1408,6 +1752,7 @@ mod tests {
             manual_commit: false,
             production: false,
             read_only: false,
+            ..Default::default()
         };
         let c = s.canceller(&cfg);
         let t = std::thread::spawn(move || {
@@ -1510,6 +1855,90 @@ mod tests {
             "INSERT INTO \"public\".\"t\" (\"id\", \"name\")\nVALUES (?, ?);"
         );
         assert!(generate(Driver::Sqlite, "t", &cols, "nope").is_err());
+    }
+
+    #[test]
+    fn passwords_live_in_the_keychain_not_the_file() {
+        // secrets:: uses an in-memory store in tests; the file goes to a temp dir.
+        let file = std::env::temp_dir().join(format!("rb-conns-{}.json", std::process::id()));
+        unsafe { std::env::set_var("RUSTY_BEAVER_CONFIG", &file) };
+        let list = vec![
+            ConnConfig {
+                id: "a".into(),
+                name: "pg".into(),
+                driver: Driver::Postgres,
+                password: "s3cret".into(),
+                ..Default::default()
+            },
+            ConnConfig {
+                id: "b".into(),
+                name: "vault".into(),
+                driver: Driver::Postgres,
+                auth: Auth::VaultDynamic,
+                vault_path: "database/creds/ro".into(),
+                ..Default::default()
+            },
+            ConnConfig {
+                id: "c".into(),
+                name: "none".into(),
+                ..Default::default()
+            },
+        ];
+        assert!(save_connections(&list).unwrap().is_empty());
+        let raw = std::fs::read_to_string(&file).unwrap();
+        assert!(!raw.contains("s3cret"), "the password is not in the file");
+        assert!(
+            raw.contains("database/creds/ro") && raw.contains("vault_dynamic"),
+            "Vault paths are no secrets"
+        );
+        let (back, resave) = load_connections();
+        assert!(!resave);
+        assert_eq!(
+            back.iter().map(|c| c.password.as_str()).collect::<Vec<_>>(),
+            ["s3cret", "", ""]
+        );
+        // An old file with a plain-text password: loads, and asks to be saved (into the keychain).
+        std::fs::write(
+            &file,
+            r#"[{"name":"old","driver":"mysql","password":"plain"}]"#,
+        )
+        .unwrap();
+        let (old, resave) = load_connections();
+        assert!(resave && !old[0].id.is_empty() && old[0].password == "plain");
+        save_connections(&old).unwrap();
+        assert!(!std::fs::read_to_string(&file).unwrap().contains("plain"));
+        forget_password(&old[0]);
+        assert_eq!(secrets::load(&old[0].id).unwrap(), None);
+        let _ = std::fs::remove_file(&file);
+    }
+
+    #[test]
+    fn empty_postgres_fields_are_not_sent() {
+        let mut c = ConnConfig {
+            name: "p".into(),
+            driver: Driver::Postgres,
+            host: "db".into(),
+            port: 0,
+            database: String::new(),
+            user: "u".into(),
+            password: String::new(),
+            manual_commit: false,
+            production: false,
+            read_only: false,
+            ..Default::default()
+        };
+        let cfg = pg_config(&c);
+        assert_eq!(
+            (
+                cfg.get_dbname(),
+                cfg.get_user(),
+                cfg.get_password(),
+                cfg.get_ports()
+            ),
+            (None, Some("u"), None, &[5432][..])
+        );
+        c.database = "postgres".into();
+        assert_eq!(pg_config(&c).get_dbname(), Some("postgres"));
     }
 
     #[test]

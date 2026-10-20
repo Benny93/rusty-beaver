@@ -533,6 +533,11 @@ impl AppView {
                     let mut c = self.conns[self.conn_ix(id).unwrap_or(0)].cfg.clone();
                     for (k, field) in [
                         ("name", &mut c.name),
+                        ("vault_addr", &mut c.vault_addr),
+                        ("vault_role", &mut c.vault_role),
+                        ("vault_mount", &mut c.vault_mount),
+                        ("vault_path", &mut c.vault_path),
+                        ("vault_field", &mut c.vault_field),
                         ("host", &mut c.host),
                         ("database", &mut c.database),
                         ("user", &mut c.user),
@@ -545,6 +550,17 @@ impl AppView {
                     if let Some(p) = a["port"].as_u64() {
                         c.port = p as u16;
                     }
+                    if let Some(m) = a["auth"].as_str() {
+                        c.auth = Auth::parse(m).ok_or(format!(
+                            "auth: {m:?} is not password, vault_kv or vault_dynamic"
+                        ))?;
+                    }
+                    if let Some(m) = a.get("ssl").filter(|m| !m.is_null()) {
+                        c.ssl = serde_json::from_value(m.clone()).map_err(|_| {
+                            format!("ssl: {m} is not prefer, disable, require or verify_full")
+                        })?;
+                    }
+                    crate::vault::upgrade_legacy(&mut c);
                     if let Some(p) = a["production"].as_bool() {
                         c.production = p;
                     }
@@ -666,7 +682,14 @@ impl AppView {
             }
             "connection_dialog" => {
                 if a["open"].as_bool().unwrap_or(true) {
-                    self.open_dialog(None, window, cx)
+                    let edit = a["connection"]
+                        .as_str()
+                        .map(|n| self.conn_by_name(n))
+                        .transpose();
+                    match edit {
+                        Ok(edit) => self.open_dialog(edit, window, cx),
+                        Err(e) => return now(self, Err(e), window, cx, done),
+                    }
                 } else {
                     self.dialog = None
                 }
@@ -729,6 +752,7 @@ impl AppView {
                 "name": c.cfg.name, "driver": c.cfg.driver, "host": c.cfg.host, "port": c.cfg.port, "database": c.cfg.database,
                 "status": match &c.status { ConnStatus::Failed(e) => format!("failed: {e}"), s => format!("{s:?}").to_lowercase() },
                 "expanded": c.expanded, "tables": c.tables.len(),
+                "auth": c.cfg.auth, "password": if c.cfg.auth.is_vault() { "vault" } else if c.cfg.password.is_empty() { "none" } else if crate::secrets::enabled() { "keychain" } else { "file" },
                 "production": c.cfg.production, "read_only": c.cfg.read_only, "server": c.server, "auto_commit": !c.cfg.manual_commit, "in_transaction": c.in_tx, "statements_in_transaction": c.tx_statements,
                 "expanded_tables": c.columns.iter().map(|(t, _)| t.clone()).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),

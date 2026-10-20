@@ -48,10 +48,46 @@ A DBeaver-style database tool written in Rust with [GPUI](https://gpui.rs/) (via
 - **ER diagram** for each connection: tables with keys, foreign-key links between them, and boxes you can drag.
 - **Query history** (last 500 statements) with duration and outcome. Click an entry to reopen it.
 - **CSV import** into a table. The header row names the columns, and the import is one transaction.
-- **Connections**: New and Edit Connection dialog with *Test Connection*. Connections are saved to `<config dir>/rusty-beaver/connections.json`.
+- **Connections**: New and Edit Connection dialog with *Test Connection*, and three explicit ways to sign in: a password kept in the OS keychain, a HashiCorp Vault secret, or Vault dynamic credentials (with OpenID Connect sign-in). See [Connecting and signing in](#connecting-and-signing-in).
 - **Dark and light themes**, or follow the system appearance (the choice is remembered), native menus, a keyboard shortcut overview (F1).
 - **Splash screen** and a **Metal Slug style pixel-art icon** (a beaver soldier hugging a database), on macOS, Windows and Linux.
 - **First start**: a demo SQLite database (beavers, lodges, missions) is created, so there is something to click on right away.
+
+## Connecting and signing in
+
+Click **New Connection**, pick the database type, then fill in the dialog's three sections:
+
+1. **Connection**: name, host, port and database (for SQLite: the database file, created if it is missing).
+   For PostgreSQL and MySQL, pick the **TLS** mode: *Prefer* (default) uses TLS when the server offers it, *Require* insists on it, *Verify certificate* also checks the certificate against the system's trusted CAs, *Off* never uses it. *Prefer* and *Require* encrypt but don't check the certificate, like libpq. Poolers such as Supavisor find the tenant from the host name sent over TLS; with TLS off they need it in the user name (`user.tenant`).
+2. **Authentication**: pick one mode with the buttons. Each mode shows only the fields it needs.
+3. **Safety**: *Production* asks before changes, *Read-only* refuses them.
+
+Click **Test Connection** to try the settings, then **Finish** to save and connect.
+
+### Authentication modes
+
+| Mode | Use it when | Fill in | Saved locally |
+|------|-------------|---------|---------------|
+| **Password** | you have a database user and password | Username, Password | the password in the OS keychain; the rest in `connections.json` |
+| **Vault secret** | the password is stored in a Vault KV secret | Username, Secret path (`secret/data/team/db`), Field (default `password`), Vault address | no secret: the password is read from Vault on every connect |
+| **Vault dynamic credentials** | Vault's database secrets engine hands out temporary users | Credentials path (`database/creds/<role>`), Vault address | no secret: a fresh user name and password on every connect |
+
+**Password.** The password goes to the macOS Keychain, the Windows Credential Manager, or the Secret Service on Linux (GNOME Keyring, KWallet), in one item (service `rusty-beaver`, account `passwords`) for all connections; `connections.json` never holds it. Passwords from older versions move there on the next start. On macOS, the first start asks once for access to that item: choose **Always Allow**. Every new build of the app is a new app to macOS, so it asks once again after an update or a local rebuild. With `RUSTY_BEAVER_KEYCHAIN=off` (for automation) they stay in the file.
+
+**Vault secret.** For KV v2 the path includes `data/`: a secret you write with `vault kv put secret/team/db password=…` is read from `secret/data/team/db`. KV v1 paths have no `data/`.
+
+**Vault dynamic credentials.** The path is the role's credentials endpoint, e.g. `database/creds/readonly`. There is no username field: Vault creates the user.
+
+**Signing in to Vault** (both Vault modes). The Vault address is the one in the dialog, else `VAULT_ADDR`. The app then uses the first token that works:
+
+1. the token from an earlier sign-in in this session,
+2. `VAULT_TOKEN`,
+3. `~/.vault-token`, which `vault login` writes,
+4. otherwise an **OpenID Connect** sign-in in your browser, exactly like `vault login -method=oidc`. *OIDC role* is optional (empty: the mount's default role) and *Auth mount* defaults to `oidc`. The callback is `http://localhost:8250/oidc/callback`, so roles set up for the Vault CLI work as they are.
+
+Vault's certificate is checked against the system's trusted CAs, so company CAs installed on the machine work. Tokens are kept in memory only. If Vault answers "permission denied", the app signs in once more and retries.
+
+Agents set the same fields over MCP: `add_connection` and `edit_connection` take `auth` (`password`, `vault_kv`, `vault_dynamic`), `ssl` (`prefer`, `require`, `verify_full`, `disable`), `vault_path`, `vault_field`, `vault_addr`, `vault_role` and `vault_mount`.
 
 ## Keyboard shortcuts
 
@@ -75,7 +111,7 @@ Mod is Cmd on macOS and Ctrl elsewhere. F1 shows this list in the app.
 ## Run
 
 ```sh
-make run          # optimized build + run (MCP on http://127.0.0.1:7878/mcp)
+make run          # optimized build + run (MCP on http://127.0.0.1:7979/mcp)
 make dev          # debug build + run
 make start/stop   # run in the background (pid + log in target/)
 make test         # unit tests
@@ -127,7 +163,7 @@ CI (`.github/workflows/ci.yml`) runs the tests and a release build on macOS, Lin
 The running app serves MCP (streamable HTTP) on `127.0.0.1` only. Requests whose Host or Origin header is not local are rejected. Set `RUSTY_BEAVER_MCP_PORT` (or `make run PORT=…`) to use a different port.
 
 ```sh
-claude mcp add --transport http rusty-beaver http://127.0.0.1:7878/mcp   # or use the bundled .mcp.json
+claude mcp add --transport http rusty-beaver http://127.0.0.1:7979/mcp   # or use the bundled .mcp.json
 ```
 
 There are 54 tools. Each one changes the UI the user is looking at and returns structured data.
@@ -178,7 +214,7 @@ scripts/mcp.py          tiny MCP client; scripts/smoke.py end-to-end check; scri
 
 ## Known limits
 
-- Passwords are stored in plain text in `connections.json`, as in DBeaver's default setup. PostgreSQL connects without TLS.
+- Without a system keychain (for example a Linux system without the Secret Service), passwords stay in `connections.json`, and the app says so. `RUSTY_BEAVER_KEYCHAIN=off` does the same on purpose, which is how the tests run.
 - Grid editing needs a primary key. Results of SQL editor queries are read-only; open the table to edit it.
 - Query parameters are inserted as text (as in DBeaver), not as bound values.
 - `make screenshots` needs an unlocked screen. macOS does not repaint windows while the session is locked, so the tour stops and writes nothing then.

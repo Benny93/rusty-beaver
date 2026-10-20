@@ -20,7 +20,15 @@ xcap = "0.9"
 dirs = "7"
 rusqlite = { version = "0.40", features = ["bundled"] }
 postgres = "0.19"
-mysql = { version = "28", default-features = false, features = ["default-rust"] }
+tokio-postgres-rustls = { version = "0.14", features = ["ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "0.7"
+rustls-native-certs = "0.8"
+mysql = { version = "28", default-features = false, features = ["default-rust", "rustls-tls-ring"] }
+# Passwords in the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service).
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+# Vault over HTTPS, trusting the OS certificate store (internal CAs).
+ureq = { version = "3", features = ["platform-verifier", "json"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"

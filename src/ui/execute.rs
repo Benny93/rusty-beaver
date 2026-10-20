@@ -287,7 +287,7 @@ impl AppView {
                         Ok(j)
                     }
                     Err(e) => {
-                        v.status = "Query failed".into();
+                        v.status = format!("Query failed: {}", e.lines().next().unwrap_or_default());
                         t.message = Some(Err(e.clone()));
                         Err(e)
                     }

@@ -48,7 +48,7 @@ def main():
     json.dump([{"name": DB, "driver": "sqlite", "database": db}], open(cfg, "w"))
     port = os.environ.get("SMOKE_PORT", "7880")
     mcp.URL = f"http://127.0.0.1:{port}/mcp"
-    env = dict(os.environ, RUSTY_BEAVER_CONFIG=cfg, RUSTY_BEAVER_MCP_PORT=port, RUSTY_BEAVER_BACKGROUND="1",
+    env = dict(os.environ, RUSTY_BEAVER_CONFIG=cfg, RUSTY_BEAVER_MCP_PORT=port, RUSTY_BEAVER_BACKGROUND="1", RUSTY_BEAVER_KEYCHAIN="off",
                RUSTY_BEAVER_HISTORY=os.path.join(tmp, "h.jsonl"), RUSTY_BEAVER_SESSION=os.path.join(tmp, "s.json"))
     app = subprocess.Popen([binary], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:

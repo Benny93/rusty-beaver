@@ -89,7 +89,19 @@ impl AppView {
                     .context_menu({
                         let view = view.clone();
                         let connected = c.status == ConnStatus::Connected;
+                        let failed = match &c.status {
+                            ConnStatus::Failed(e) => Some(e.clone()),
+                            _ => None,
+                        };
                         move |menu: PopupMenu, _, _| {
+                            let menu = match failed.clone() {
+                                Some(e) => menu
+                                    .item(menu_item(&view, "Copy Error", move |v, _, cx| {
+                                        v.copy_text("copy-conn-error", e.clone(), cx)
+                                    }))
+                                    .separator(),
+                                None => menu,
+                            };
                             menu.item(menu_item(
                                 &view,
                                 if connected { "Disconnect" } else { "Connect" },
@@ -318,8 +330,8 @@ impl AppView {
             .bg(t.sidebar)
             .child(
                 h_flex()
-                    .px_1()
-                    .py_1()
+                    .px_2()
+                    .py_1p5()
                     .gap_1()
                     .border_b_1()
                     .border_color(t.border)
@@ -337,7 +349,7 @@ impl AppView {
                     )),
             )
             .child(
-                div().px_1().pt_1().child(
+                div().px_2().pt_2().pb_1().child(
                     Input::new(&self.side_filter)
                         .xsmall()
                         .cleanable(true)
@@ -349,7 +361,8 @@ impl AppView {
                     .id("nav-scroll")
                     .flex_1()
                     .overflow_y_scroll()
-                    .p_1()
+                    .px_2()
+                    .py_1()
                     .children(list),
             )
     }

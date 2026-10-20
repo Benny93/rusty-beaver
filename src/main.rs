@@ -9,7 +9,9 @@ mod grid;
 mod history;
 mod mcp;
 mod platform;
+mod secrets;
 mod ui;
+mod vault;
 
 fn main() {
     // RUSTY_BEAVER_MCP_PORT=0 still binds an OS-chosen port; the toolbar shows where.

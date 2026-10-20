@@ -113,7 +113,7 @@
           <p>The running app serves MCP over streamable HTTP, on <code>127.0.0.1</code> only. Each tool is a semantic command: <em>connect</em>, <em>open a table</em>, <em>edit a cell</em>, <em>run SQL</em>. It changes what the user sees and returns structured data, so the agent and the user always look at the same thing.</p>
           <p>Safety is built in. On production connections, an agent has to pass <code>confirm: true</code> before changing data. Read-only connections refuse changes outright.</p>
           <pre><code><span class="c"># Claude Code</span>
-claude mcp add --transport http rusty-beaver http://127.0.0.1:7878/mcp</code></pre>
+claude mcp add --transport http rusty-beaver http://127.0.0.1:7979/mcp</code></pre>
           <pre><code><span class="c"># or try it from a terminal</span>
 python3 scripts/mcp.py run_sql '{"connection": "Beaver Demo (SQLite)",
   "sql": "SELECT name FROM beavers WHERE logs_chewed > :min",

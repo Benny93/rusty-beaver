@@ -3,11 +3,11 @@
 
 usage: mcp.py <tool> ['{"json": "args"}' | @args.json] [--png out.png]
        mcp.py tools            # list tools
-Env: RUSTY_BEAVER_MCP (default http://127.0.0.1:7878/mcp)
+Env: RUSTY_BEAVER_MCP (default http://127.0.0.1:7979/mcp)
 """
 import base64, json, os, sys, urllib.error, urllib.request
 
-URL = os.environ.get("RUSTY_BEAVER_MCP", "http://127.0.0.1:7878/mcp")
+URL = os.environ.get("RUSTY_BEAVER_MCP", "http://127.0.0.1:7979/mcp")
 session = None
 
 

@@ -164,9 +164,20 @@ impl AppView {
         let is_table = matches!(tab.kind, TabKind::Table(_));
         let message = match &tab.message {
             _ if tab.running => div().text_color(t.warning).child(format!("Executing… {:.1} s", tab.started.map(|s| s.elapsed().as_secs_f32()).unwrap_or(0.))),
-            Some(Ok(m)) => div().text_color(t.muted_foreground).child(m.clone()),
-            Some(Err(e)) => div().text_color(t.danger).child(format!("SQL Error: {e}")),
-            None => div().text_color(t.muted_foreground).child("Cmd/Ctrl+Enter runs the statement at the cursor (or the selection) · Cmd/Ctrl+Shift+Enter runs the script"),
+            Some(Ok(m)) => div().truncate().text_color(t.muted_foreground).child(m.clone()),
+            // One line, cut off with "…": the copy button and the status bar have it all.
+            Some(Err(e)) => h_flex()
+                .gap_1()
+                .min_w_0()
+                .child(self.copy_button("copy-sql-error", e.clone(), cx))
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(t.danger)
+                        .child(format!("SQL Error: {}", e.lines().next().unwrap_or_default())),
+                ),
+            None => div().truncate().text_color(t.muted_foreground).child("Cmd/Ctrl+Enter runs the statement at the cursor (or the selection) · Cmd/Ctrl+Shift+Enter runs the script"),
         };
         let g = tab.grid.read(cx).delegate();
         let pending = g.changes.count();
@@ -392,7 +403,7 @@ impl AppView {
                         })),
                 )
             })
-            .child(div().flex_1().min_w_0().child(message))
+            .child(div().flex_1().min_w_0().pr_2().child(message))
             .when(is_table && tab.view == TableView::Data, |d| {
                 d.children(tab.total.map(|n| {
                     div()

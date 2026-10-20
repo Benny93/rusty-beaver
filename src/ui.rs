@@ -14,7 +14,7 @@ mod scripts;
 mod views;
 
 use crate::complete::{SharedCatalog, SqlCompletion};
-use crate::db::{self, ConnConfig, Driver, QueryResult, Session};
+use crate::db::{self, Auth, ConnConfig, Driver, QueryResult, Session};
 use crate::grid::Grid;
 use crate::history;
 use crate::mcp;
@@ -118,6 +118,9 @@ const BRAND: Rgba = Rgba {
     b: 0.165,
     a: 1.,
 };
+
+/// How long a copy button shows its tick.
+const COPIED_FOR: Duration = Duration::from_millis(1500);
 
 /// Rows a table tab loads per page.
 const PAGE: usize = 200;
@@ -408,6 +411,14 @@ struct ConnDialog {
     database: Entity<InputState>,
     user: Entity<InputState>,
     password: Entity<InputState>,
+    auth: crate::db::Auth,
+    ssl: crate::db::Ssl,
+    /// Vault modes: secret or credentials path, the secret's field, address, OIDC role and mount.
+    vault_path: Entity<InputState>,
+    vault_field: Entity<InputState>,
+    vault_addr: Entity<InputState>,
+    vault_role: Entity<InputState>,
+    vault_mount: Entity<InputState>,
     test: Option<Result<String, String>>,
     testing: bool,
     /// Editing this saved connection instead of adding one.
@@ -456,6 +467,8 @@ pub struct AppView {
     follow_system: bool,
     /// The keyboard shortcut overlay is open.
     shortcuts: bool,
+    /// The copy button that was just used, and when (it shows a tick for a moment).
+    copied: Option<(&'static str, Instant)>,
     /// A save of the open scripts is scheduled.
     session_dirty: bool,
 }
@@ -478,7 +491,17 @@ impl AppView {
             }
         })
         .detach();
-        let conns: Vec<Conn> = db::load_connections()
+        // Passwords move into the OS keychain the first time (and new connections get ids).
+        let (loaded, resave) = db::load_connections();
+        let mut status = "Ready".to_string();
+        if resave {
+            match db::save_connections(&loaded) {
+                Ok(w) if !w.is_empty() => status = w.join("; "),
+                Err(e) => status = format!("Could not save connections: {e}"),
+                _ => {}
+            }
+        }
+        let conns: Vec<Conn> = loaded
             .into_iter()
             .enumerate()
             .map(|(i, cfg)| Conn {
@@ -525,7 +548,7 @@ impl AppView {
                 _ => true,
             },
             follow_system: settings()["theme"].as_str() == Some("system"),
-            status: "Ready".into(),
+            status,
             mcp,
             started: Instant::now(),
             splash_image: Arc::new(Image::from_bytes(ImageFormat::Png, SPLASH_PNG.to_vec())),
@@ -535,6 +558,7 @@ impl AppView {
             history: history::load(),
             session_dirty: false,
             shortcuts: false,
+            copied: None,
             params: None,
         }
     }
@@ -562,8 +586,10 @@ impl AppView {
 
     fn save(&mut self) {
         let list: Vec<ConnConfig> = self.conns.iter().map(|c| c.cfg.clone()).collect();
-        if let Err(e) = db::save_connections(&list) {
-            self.status = format!("Could not save connections: {e}");
+        match db::save_connections(&list) {
+            Ok(w) if !w.is_empty() => self.status = w.join("; "),
+            Err(e) => self.status = format!("Could not save connections: {e}"),
+            _ => {}
         }
     }
 
@@ -802,6 +828,35 @@ impl AppView {
             .or(self.conns.first().map(|c| c.id))
             .ok_or("add a connection first")?;
         Ok(self.open_tab(conn, TabKind::Sql, String::new(), window, cx))
+    }
+
+    /// Put text on the clipboard; the copy button `id` shows a tick for a moment.
+    fn copy_text(&mut self, id: &'static str, text: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.copied = Some((id, Instant::now()));
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(COPIED_FOR).await;
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// A small button that copies `text`, e.g. an error message.
+    fn copy_button(&self, id: &'static str, text: String, cx: &mut Context<Self>) -> Button {
+        let done = self
+            .copied
+            .is_some_and(|(i, at)| i == id && at.elapsed() < COPIED_FOR);
+        Button::new(id)
+            .xsmall()
+            .ghost()
+            .icon(if done {
+                IconName::Check
+            } else {
+                IconName::Copy
+            })
+            .tooltip(if done { "Copied" } else { "Copy to clipboard" })
+            .on_click(cx.listener(move |v, _, _, cx| v.copy_text(id, text.clone(), cx)))
     }
 
     fn set_theme(&mut self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
@@ -1171,16 +1226,31 @@ impl Render for AppView {
                 h_flex()
                     .gap_3()
                     .px_2()
-                    .py(px(2.))
+                    .py_1()
                     .border_t_1()
                     .border_color(t.border)
                     .bg(t.title_bar)
                     .text_xs()
                     .text_color(t.muted_foreground)
-                    .child(self.status.clone())
-                    .child(div().flex_1())
+                    .when(!self.status.is_empty(), |d| {
+                        d.child(self.copy_button("copy-status", self.status.clone(), cx))
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(self.status.clone()),
+                    )
                     .children(active_conn)
-                    .child(self.mcp.clone())
+                    .child(
+                        h_flex()
+                            .gap_1()
+                            .when_some(self.mcp.strip_prefix("MCP: "), |d, url| {
+                                d.child(self.copy_button("copy-mcp", url.to_string(), cx))
+                            })
+                            .child(self.mcp.clone()),
+                    )
                     .child(format!(
                         "{} connection(s) · {tabs} tab(s)",
                         self.conns.len()

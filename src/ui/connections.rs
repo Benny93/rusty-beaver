@@ -58,12 +58,21 @@ impl AppView {
             return done(self, Ok(tables_json(&tables)), window, cx);
         }
         c.status = ConnStatus::Connecting;
-        self.status = format!("Connecting to {}…", c.cfg.name);
+        self.status = if c.cfg.auth.is_vault() {
+            format!(
+                "Connecting to {}: fetching credentials from Vault (sign in in your browser if it opens)…",
+                c.cfg.name
+            )
+        } else {
+            format!("Connecting to {}…", c.cfg.name)
+        };
         let cfg = c.cfg.clone();
         cx.notify();
         cx.spawn_in(window, async move |this, cx| {
             let res = cx
                 .background_spawn(async move {
+                    // The resolved credentials also serve the canceller (MySQL opens a 2nd connection).
+                    let cfg = crate::vault::resolve(&cfg, &crate::vault::open_browser)?;
                     let mut s = db::connect(&cfg)?;
                     let tables = s.tables()?;
                     let canceller = s.canceller(&cfg);

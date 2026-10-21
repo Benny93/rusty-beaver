@@ -266,6 +266,9 @@ def main():
             call("run_sql", {"connection": DB, "sql": "INSERT INTO lodges(name, river) VALUES ('Prod Toggle', 'Main')"})
             call("edit_connection", {"connection": DB, "production": True})
             call("edit_connection", {"connection": DB, "production": False})
+            # a change that reconnects would roll it back: refused while it is open
+            assert "transaction" in call("edit_connection", {"connection": DB, "read_only": True}, ok=False)
+            assert [c for c in call("get_state")["connections"] if c["name"] == DB][0]["in_transaction"]
             call("commit", {"connection": DB})
             assert q("SELECT count(*) FROM lodges WHERE name = 'Prod Toggle'") == [(1,)]
             # a script that fails before its COMMIT leaves the transaction it opened open

@@ -213,16 +213,24 @@ impl AppView {
         let mut cfg = cfg;
         cfg.manual_commit = self.conns[ix].cfg.manual_commit;
         cfg.id = self.conns[ix].cfg.id.clone();
-        let old = std::mem::replace(&mut self.conns[ix].cfg, cfg.clone());
         // what the connection itself does not use: changing it keeps the session (and an open
         // transaction, which reconnecting would roll back)
         let renamed_only = ConnConfig {
             name: cfg.name.clone(),
             keychain: cfg.keychain,     // the dialog does not carry it
             production: cfg.production, // asked about by the app, not the server
-            ..old.clone()
+            ..self.conns[ix].cfg.clone()
         };
-        if serde_json::to_string(&renamed_only).ok() != serde_json::to_string(&cfg).ok() {
+        let reconnect =
+            serde_json::to_string(&renamed_only).ok() != serde_json::to_string(&cfg).ok();
+        if reconnect && self.conns[ix].in_tx {
+            return Err(format!(
+                "{}: commit or roll back the open transaction first (the change reconnects)",
+                self.conns[ix].cfg.name
+            ));
+        }
+        let old = std::mem::replace(&mut self.conns[ix].cfg, cfg.clone());
+        if reconnect {
             self.disconnect(id, cx);
         }
         for t in self.tabs.iter_mut().filter(|t| t.conn == id) {

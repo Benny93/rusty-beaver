@@ -437,7 +437,13 @@ pub fn resolve(c: &ConnConfig, open: &dyn Fn(&str)) -> Result<ConnConfig, String
     if status == 403 {
         // The token expired or lacks rights: sign in again once, with another token.
         remember(&addr, None);
-        tok = token(c, &addr, open, &tok)?;
+        // a sign-in that fails then must not hide why: the token may only lack the right
+        tok = token(c, &addr, open, &tok).map_err(|e| {
+            format!(
+                "Vault {path}: HTTP 403: {}\n(signing in again failed: {e})",
+                vault_errors(&v)
+            )
+        })?;
         (status, v) = call(&addr, "GET", &path, Some(&tok), &[], None)?;
     }
     if status != 200 {
@@ -601,7 +607,13 @@ mod tests {
                         serde_json::json!({ "auth": { "client_token": "s.fake" } }).to_string(),
                         None,
                     )
-                } else if token != "s.fake" {
+                } else if target.starts_with("/v1/auth/nope/") {
+                    (
+                        400,
+                        r#"{"errors":["no handler for route \"auth/nope\""]}"#.to_string(),
+                        None,
+                    )
+                } else if token != "s.fake" || target.starts_with("/v1/kv/data/denied") {
                     (403, r#"{"errors":["permission denied"]}"#.to_string(), None)
                 } else if target.starts_with("/v1/auth/token/lookup-self") {
                     (200, "{}".to_string(), None)
@@ -713,6 +725,15 @@ mod tests {
             ..c.clone()
         };
         assert!(resolve(&team, &browser).unwrap_err().contains("versioned"));
+        // a valid token without the right, and no sign-in that could get one: Vault's answer
+        let denied = ConnConfig {
+            vault_path: "kv/data/denied".into(),
+            vault_mount: "nope".into(),
+            ..c.clone()
+        };
+        let e = resolve(&denied, &browser).unwrap_err();
+        assert!(e.contains("permission denied"), "{e}");
+        remember(&c.vault_addr, Some("s.fake".into()));
         // a body that is no JSON: its text, not "no details"
         let proxy = ConnConfig {
             vault_path: "kv/proxy".into(),

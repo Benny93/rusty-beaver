@@ -112,11 +112,18 @@ fn call(
     query: &[(&str, &str)],
     body: Option<Value>,
 ) -> Result<(u16, Value), String> {
-    let url = format!(
-        "{}/v1/{}",
-        addr.trim_end_matches('/'),
-        path.trim_start_matches('/')
-    );
+    // a secret named "my app" or "a#b": its characters, not URL syntax
+    let path: String = path
+        .trim_start_matches('/')
+        .bytes()
+        .map(|c| match c {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
+                (c as char).to_string()
+            }
+            c => format!("%{c:02X}"),
+        })
+        .collect();
+    let url = format!("{}/v1/{path}", addr.trim_end_matches('/'));
     let a = agent();
     let res = if method == "POST" {
         let mut r = a.post(&url);
@@ -640,6 +647,12 @@ mod tests {
                     (403, r#"{"errors":["permission denied"]}"#.to_string(), None)
                 } else if target.starts_with("/v1/auth/token/lookup-self") {
                     (200, "{}".to_string(), None)
+                } else if target.starts_with("/v1/kv/data/my%20app%231") {
+                    (
+                        200,
+                        r#"{"data":{"data":{"password":"spaced"}}}"#.to_string(),
+                        None,
+                    )
                 } else if target.starts_with("/v1/kv/proxy") {
                     // a proxy in front of Vault answers with its own page
                     (
@@ -780,6 +793,16 @@ mod tests {
             let r = h.join().unwrap();
             assert!(r.is_ok(), "{r:?}");
         }
+        // a secret name with a space or # goes into the URL encoded
+        let spaced = ConnConfig {
+            vault_path: "kv/data/my app#1".into(),
+            vault_field: String::new(),
+            ..c.clone()
+        };
+        assert_eq!(
+            resolve(&spaced, &browser).map(|r| r.password),
+            Ok("spaced".to_string())
+        );
         // a body that is no JSON: its text, not "no details"
         let proxy = ConnConfig {
             vault_path: "kv/proxy".into(),

@@ -1434,6 +1434,14 @@ fn param_spans(sql: &str) -> Vec<(std::ops::Range<usize>, String)> {
     let mut i = 0;
     while i < b.len() {
         match b[i] {
+            // E'it\'s': a backslash escapes there (Postgres), as in MySQL strings
+            b'\''
+                if i > 0
+                    && matches!(b[i - 1], b'e' | b'E')
+                    && (i < 2 || !(b[i - 2].is_ascii_alphanumeric() || b[i - 2] == b'_')) =>
+            {
+                i = quote_end(b, i, true)
+            }
             b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
             b'-' | b'#' if b[i] == b'#' && mysql || b[i] == b'-' && b.get(i + 1) == Some(&b'-') => {
                 while i < b.len() && b[i] != b'\n' {
@@ -2657,6 +2665,8 @@ mod tests {
             "SELECT ':skip', x::int FROM t -- :nope\nWHERE a = :rank AND b > :min AND c = :rank";
         assert_eq!(params(sql), ["rank", "min"]);
         assert_eq!(params("SELECT $$it's :no$$, :id"), ["id"]);
+        // E'' strings take backslash escapes (Postgres)
+        assert_eq!(params(r"SELECT E'it\'s :no', :id"), ["id"]);
         assert_eq!(
             params("SELECT arr[2:n], arr[i:j] FROM t WHERE a = :id"),
             ["id"]

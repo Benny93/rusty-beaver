@@ -252,6 +252,11 @@ def main():
             call("run_sql", {"connection": DB, "sql": "INSERT INTO lodges(name, river) VALUES ('Tx Lodge', 'Main'); COMMIT"})
             assert not [c for c in call("get_state")["connections"] if c["name"] == DB][0]["in_transaction"]
             assert q("SELECT count(*) FROM lodges WHERE name = 'Tx Lodge'") == [(1,)]
+            # SQLite ended the transaction itself (ON CONFLICT ROLLBACK): Rollback still ends it here
+            call("run_sql", {"connection": DB, "sql": "CREATE TABLE u(id INTEGER PRIMARY KEY ON CONFLICT ROLLBACK); INSERT INTO u VALUES (1); COMMIT"})
+            call("run_sql", {"connection": DB, "sql": "INSERT INTO u VALUES (1)"}, ok=False)
+            call("rollback", {"connection": DB}, ok=False)  # SQLite: no transaction is active
+            assert not [c for c in call("get_state")["connections"] if c["name"] == DB][0]["in_transaction"]
             # ROLLBACK TRANSACTION TO a savepoint keeps the transaction open
             call("run_sql", {"connection": DB, "sql": "INSERT INTO lodges(name, river) VALUES ('Sp Lodge', 'Main')"})
             call("run_sql", {"connection": DB, "sql": "SAVEPOINT s"})

@@ -377,8 +377,12 @@ impl AppView {
                     };
                     // SQLite keeps the transaction when it refuses a COMMIT (a deferred
                     // foreign key): then Rollback must still be possible; Postgres and MySQL
-                    // end it either way
-                    if r.is_ok() || c.cfg.driver != Driver::Sqlite {
+                    // end it either way. One SQLite ended itself (ON CONFLICT ROLLBACK) is no
+                    // longer open either.
+                    let gone = r
+                        .as_ref()
+                        .is_err_and(|e| e.contains("no transaction is active"));
+                    if r.is_ok() || gone || c.cfg.driver != Driver::Sqlite {
                         (c.in_tx, c.tx_statements) = (false, 0);
                     }
                 }

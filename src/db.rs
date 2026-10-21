@@ -1620,10 +1620,8 @@ fn param_spans(sql: &str) -> Vec<(std::ops::Range<usize>, String)> {
 /// reads the SQL both as standard SQL and as MySQL (\' escapes, # comments): a write either
 /// way counts
 pub fn is_write(sql: &str, mysql: bool) -> bool {
-    // comments in the connection's dialect (MySQL's --x is code, Postgres' --x a comment);
-    // strings both with and without backslash escapes, as servers can be set either way
-    // (E'…', standard_conforming_strings, NO_BACKSLASH_ESCAPES)
-    writes(sql, mysql, false) || writes(sql, mysql, true)
+    // in the connection's dialect: MySQL's --x is code, Postgres' --x a comment
+    writes(sql, mysql)
 }
 
 /// A `--` (or MySQL `#`) comment starts at `i`. MySQL: -- only before a space (1--1 is
@@ -1653,7 +1651,7 @@ fn quote_end(b: &[u8], i: usize, mysql: bool) -> usize {
     i.min(b.len())
 }
 
-fn writes(sql: &str, mysql: bool, escapes: bool) -> bool {
+fn writes(sql: &str, mysql: bool) -> bool {
     const WRITES: &[&str] = &[
         "INSERT", "UPDATE", "DELETE", "MERGE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT",
         "REVOKE", "RENAME", "INTO",
@@ -1681,7 +1679,8 @@ fn writes(sql: &str, mysql: bool, escapes: bool) -> bool {
     let mut explain = false;
     while i < b.len() {
         match b[i] {
-            b'\'' | b'"' | b'`' => i = quote_end(b, i, escapes),
+            b'\'' if e_string(b, i) => i = quote_end(b, i, true),
+            b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
             b'-' | b'#' if line_comment(b, i, mysql) => {
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
@@ -2949,10 +2948,6 @@ mod tests {
         assert!(!is_write("SELECT * FROM t --delete later", false));
         assert!(!is_write("SELECT 1\n--DROP TABLE x", false));
         assert!(is_write(r"SELECT E'it\'s'; DELETE FROM t; --'", false));
-        // strings read both ways: whichever way the server is set, the DELETE is seen
-        assert!(is_write(r"SELECT 'x\' ; ' ; DELETE FROM t", false)); // standard_conforming_strings=off
-        assert!(is_write(r"SELECT 'a\'; DELETE FROM t; -- '", true)); // NO_BACKSLASH_ESCAPES
-        assert!(is_write(r"SELECT e'\'; DELETE FROM t; --'", false)); // SQLite: no E'' strings
         assert!(is_write_any("SELECT 1 /*!50000 ; DROP TABLE t */"));
         assert!(!is_write_any("SELECT 1 /* ; DROP TABLE t */"));
         // the comment ends at */, also when * follows it

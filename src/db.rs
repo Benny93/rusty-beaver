@@ -633,7 +633,25 @@ impl Session {
                 return Ok(format!("{};", text(v)));
             }
         }
-        // Postgres has no SHOW CREATE: rebuild it from the columns.
+        // Postgres has no SHOW CREATE. A view (or materialized view) has its definition…
+        if driver == Driver::Postgres {
+            let t = driver.table_ref(table);
+            let sql = format!(
+                "SELECT c.relkind::text, pg_get_viewdef(c.oid, true) FROM pg_class c \
+                 WHERE c.oid = to_regclass({}) AND c.relkind IN ('v', 'm')",
+                driver.literal(&t)
+            );
+            if let Some(row) = self.query(&sql)?.rows.first() {
+                let kind = if text(&row[0]) == "m" {
+                    "MATERIALIZED VIEW"
+                } else {
+                    "VIEW"
+                };
+                let def = text(&row[1]).trim().trim_end_matches(';');
+                return Ok(format!("CREATE {kind} {t} AS\n{def};"));
+            }
+        }
+        // …a table is rebuilt from its columns.
         let cols = self.columns(table)?;
         let mut lines: Vec<String> = cols
             .rows

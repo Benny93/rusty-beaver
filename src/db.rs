@@ -1714,6 +1714,7 @@ fn writes(sql: &str, mysql: bool) -> bool {
         "QUERY_ONLY",
         "DEFAULT_TRANSACTION_READ_ONLY",
         "TRANSACTION_READ_ONLY",
+        "TX_READ_ONLY", // MySQL 5.7 and MariaDB's name for it
     ];
     let b = sql.as_bytes();
     let mut i = 0;
@@ -3022,6 +3023,7 @@ mod tests {
         assert!(!is_write("SELECT * FROM t --delete later", false));
         // read-only switched off in another form: PRAGMA x(0), set_config(…)
         assert!(is_write_any("PRAGMA query_only(0)"));
+        assert!(is_write_any("SET SESSION tx_read_only = 0")); // MySQL 5.7, MariaDB
         assert!(!is_write_any("PRAGMA table_info(t)"));
         assert!(is_write(
             "SELECT set_config('default_transaction_read_only', 'off', false)",

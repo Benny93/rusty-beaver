@@ -1512,13 +1512,7 @@ fn param_spans(sql: &str) -> Vec<(std::ops::Range<usize>, String)> {
     while i < b.len() {
         match b[i] {
             // E'it\'s': a backslash escapes there (Postgres), as in MySQL strings
-            b'\''
-                if i > 0
-                    && matches!(b[i - 1], b'e' | b'E')
-                    && (i < 2 || !(b[i - 2].is_ascii_alphanumeric() || b[i - 2] == b'_')) =>
-            {
-                i = quote_end(b, i, true)
-            }
+            b'\'' if e_string(b, i) => i = quote_end(b, i, true),
             b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
             b'-' | b'#' if b[i] == b'#' && mysql || b[i] == b'-' && b.get(i + 1) == Some(&b'-') => {
                 while i < b.len() && b[i] != b'\n' {
@@ -1569,6 +1563,13 @@ fn param_spans(sql: &str) -> Vec<(std::ops::Range<usize>, String)> {
 /// way counts
 pub fn is_write(sql: &str) -> bool {
     writes(sql, false) || writes(sql, true)
+}
+
+/// The quote at `i` opens a Postgres E'…' string, where a backslash escapes.
+fn e_string(b: &[u8], i: usize) -> bool {
+    i > 0
+        && matches!(b[i - 1], b'e' | b'E')
+        && (i < 2 || !(b[i - 2].is_ascii_alphanumeric() || b[i - 2] == b'_'))
 }
 
 /// Index of the closing quote of the string or quoted name opening at `i` (or the end).
@@ -1694,7 +1695,7 @@ pub fn statement_heads(sql: &str, mysql: bool) -> Vec<(String, String)> {
     while i < b.len() {
         match b[i] {
             b'\'' | b'"' | b'`' => {
-                i = quote_end(b, i, mysql);
+                i = quote_end(b, i, mysql || b[i] == b'\'' && e_string(b, i));
                 if cur.len() == 1 {
                     cur.push(String::new()); // CREATE "x": no second keyword
                 }
@@ -1839,6 +1840,7 @@ pub fn statement_at(sql: &str, offset: usize, mysql: bool) -> std::ops::Range<us
     let mut i = 0;
     while i < b.len() {
         match b[i] {
+            b'\'' if e_string(b, i) => i = quote_end(b, i, true),
             b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
             b'-' | b'#' if b[i] == b'#' && mysql || b[i] == b'-' && b.get(i + 1) == Some(&b'-') => {
                 while i < b.len() && b[i] != b'\n' {
@@ -2979,6 +2981,14 @@ mod tests {
         let c = "SELECT 1;\n/* note */";
         assert_eq!(&c[statement_at(c, c.len(), false)], "SELECT 1;");
         assert_eq!(&"-- x"[statement_at("-- x", 2, false)], "-- x");
+        // Postgres E'…': a backslash escapes the quote
+        let e = "SELECT E'it\\'s; ok';\nSELECT 2";
+        assert_eq!(&e[statement_at(e, 0, false)], "SELECT E'it\\'s; ok';");
+        let heads = statement_heads("SELECT E'a\\'; DROP x'; SELECT 2", false);
+        assert_eq!(
+            heads.iter().map(|h| h.0.as_str()).collect::<Vec<_>>(),
+            ["SELECT", "SELECT"]
+        );
     }
 
     #[test]

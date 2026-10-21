@@ -608,6 +608,14 @@ impl AppView {
         }
     }
 
+    /// MySQL quotes differently (backslash escapes, # comments).
+    fn mysql_tab(&self, tab: usize) -> bool {
+        self.tabs
+            .get(tab)
+            .and_then(|t| self.conn_ix(t.conn))
+            .is_some_and(|i| self.conns[i].cfg.driver == Driver::Mysql)
+    }
+
     fn conn_ix(&self, id: u64) -> Option<usize> {
         self.conns.iter().position(|c| c.id == id)
     }

@@ -24,6 +24,7 @@ impl AppView {
         {
             self.save_session_soon(cx); // reads the editor a second later, after the text is in
         }
+        let mysql = self.mysql_tab(tab);
         let Some(t) = self.tabs.get_mut(tab) else {
             return done(self, Err("no such tab".into()), window, cx);
         };
@@ -58,7 +59,7 @@ impl AppView {
                 let sel = e.selected_text().to_string();
                 if sel.trim().is_empty() {
                     let text = e.value().to_string();
-                    text[db::statement_at(&text, e.cursor())].to_string()
+                    text[db::statement_at(&text, e.cursor(), mysql)].to_string()
                 } else {
                     sel
                 }
@@ -338,7 +339,9 @@ impl AppView {
             return Some(sel);
         }
         let text = e.value().to_string();
-        Some(text[db::statement_at(&text, e.cursor())].to_string()).filter(|s| !s.trim().is_empty())
+        let mysql = self.mysql_tab(tab);
+        Some(text[db::statement_at(&text, e.cursor(), mysql)].to_string())
+            .filter(|s| !s.trim().is_empty())
     }
 
     /// Show the query plan of the current statement in the result grid.

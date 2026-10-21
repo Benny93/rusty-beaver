@@ -1246,18 +1246,16 @@ pub fn generate(
 /// Byte ranges and names of `:name` parameters, outside quotes and comments (`::type` casts
 /// and `:=` are not parameters).
 fn param_spans(sql: &str) -> Vec<(std::ops::Range<usize>, String)> {
+    // ponytail: standard quoting; after a MySQL \' a :name goes unseen and the server
+    // reports it, nothing runs
+    let mysql = false;
     let b = sql.as_bytes();
     let mut out = vec![];
     let mut i = 0;
     while i < b.len() {
         match b[i] {
-            q @ (b'\'' | b'"' | b'`') => {
-                i += 1;
-                while i < b.len() && b[i] != q {
-                    i += 1;
-                }
-            }
-            b'-' if b.get(i + 1) == Some(&b'-') => {
+            b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
+            b'-' | b'#' if b[i] == b'#' && mysql || b[i] == b'-' && b.get(i + 1) == Some(&b'-') => {
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
                 }
@@ -1298,8 +1296,25 @@ fn param_spans(sql: &str) -> Vec<(std::ops::Range<usize>, String)> {
 /// Does the SQL change data or schema? Looks for INSERT, UPDATE, DELETE, MERGE, DROP, ALTER,
 /// TRUNCATE, CREATE, GRANT, REVOKE, RENAME, REPLACE, COPY, CALL, ... as words outside strings
 /// and comments.
-/// ponytail: keyword scan errs on the side of asking (a column named "update" asks too)
+/// ponytail: keyword scan errs on the side of asking (a column named "update" asks too); it
+/// reads the SQL both as standard SQL and as MySQL (\' escapes, # comments): a write either
+/// way counts
 pub fn is_write(sql: &str) -> bool {
+    writes(sql, false) || writes(sql, true)
+}
+
+/// Index of the closing quote of the string or quoted name opening at `i` (or the end).
+/// MySQL: a backslash escapes the next byte.
+fn quote_end(b: &[u8], i: usize, mysql: bool) -> usize {
+    let q = b[i];
+    let mut i = i + 1;
+    while i < b.len() && b[i] != q {
+        i += if mysql && b[i] == b'\\' { 2 } else { 1 };
+    }
+    i.min(b.len())
+}
+
+fn writes(sql: &str, mysql: bool) -> bool {
     const WRITES: &[&str] = &[
         "INSERT", "UPDATE", "DELETE", "MERGE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT",
         "REVOKE", "RENAME", "REPLACE", "COPY", "CALL", "DO", "INTO", "LOAD", "VACUUM", "REINDEX",
@@ -1309,13 +1324,8 @@ pub fn is_write(sql: &str) -> bool {
     let mut i = 0;
     while i < b.len() {
         match b[i] {
-            q @ (b'\'' | b'"' | b'`') => {
-                i += 1;
-                while i < b.len() && b[i] != q {
-                    i += 1;
-                }
-            }
-            b'-' if b.get(i + 1) == Some(&b'-') => {
+            b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
+            b'-' | b'#' if b[i] == b'#' && mysql || b[i] == b'-' && b.get(i + 1) == Some(&b'-') => {
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
                 }
@@ -1416,19 +1426,14 @@ pub fn dollar_quote_end(sql: &str, i: usize) -> Option<usize> {
 /// Byte range of the statement at `offset`: statements end at `;` or at a blank line,
 /// outside quotes and comments (DBeaver's "smart" delimiting). A cursor in the gap after a
 /// statement belongs to that statement.
-pub fn statement_at(sql: &str, offset: usize) -> std::ops::Range<usize> {
+pub fn statement_at(sql: &str, offset: usize, mysql: bool) -> std::ops::Range<usize> {
     let b = sql.as_bytes();
     let mut bounds = vec![0];
     let mut i = 0;
     while i < b.len() {
         match b[i] {
-            q @ (b'\'' | b'"' | b'`') => {
-                i += 1;
-                while i < b.len() && b[i] != q {
-                    i += 1;
-                }
-            }
-            b'-' if b.get(i + 1) == Some(&b'-') => {
+            b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
+            b'-' | b'#' if b[i] == b'#' && mysql || b[i] == b'-' && b.get(i + 1) == Some(&b'-') => {
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
                 }
@@ -2089,6 +2094,14 @@ mod tests {
         assert!(is_write("REPLACE INTO t VALUES (1)"));
         assert!(is_write("SELECT $a$'$a$; DELETE FROM t; --'"));
         assert!(!is_write("SELECT $$ delete $$, $1"));
+        // MySQL and E'' backslash escapes, MySQL # comments; PG's #- operator is no comment
+        assert!(is_write(
+            r"SELECT * FROM t WHERE n = 'O\'Brien'; DELETE FROM t"
+        ));
+        assert!(is_write(r"SELECT E'it\'s'; DELETE FROM t; --'"));
+        assert!(is_write("SELECT 1 # don't\nDELETE FROM t"));
+        assert!(is_write("SELECT j #- '{a}' FROM t; DELETE FROM t"));
+        assert!(!is_write(r"SELECT 'a\', 'b' -- update"));
         assert!(is_write("SELECT * INTO newt FROM t"));
     }
 
@@ -2117,7 +2130,7 @@ mod tests {
     #[test]
     fn statement_under_cursor() {
         let sql = "SELECT 1;\nSELECT ';' AS semi -- ; comment\n  FROM t;\n\nUPDATE t SET a = 1\n\nSELECT 3";
-        let at = |o: usize| &sql[statement_at(sql, o)];
+        let at = |o: usize| &sql[statement_at(sql, o, false)];
         assert_eq!(at(0), "SELECT 1;");
         assert_eq!(at(9), "SELECT 1;"); // right after the ;
         assert_eq!(at(12), "SELECT ';' AS semi -- ; comment\n  FROM t;");
@@ -2127,9 +2140,11 @@ mod tests {
             at(sql.find("\n\nUPDATE").unwrap() + 1),
             "SELECT ';' AS semi -- ; comment\n  FROM t;"
         ); // blank line gap
-        assert_eq!(&"  "[statement_at("  ", 1)], "");
+        assert_eq!(&"  "[statement_at("  ", 1, false)], "");
         let f = "CREATE FUNCTION f() RETURNS int AS $body$\nBEGIN\n  PERFORM 1;\n\n  RETURN 1;\nEND $body$ LANGUAGE plpgsql;";
-        assert_eq!(&f[statement_at(f, 3)], f);
+        assert_eq!(&f[statement_at(f, 3, false)], f);
+        let m = r"SELECT 'O\'Brien;'; SELECT 2";
+        assert_eq!(&m[statement_at(m, 3, true)], r"SELECT 'O\'Brien;';");
     }
 
     #[test]

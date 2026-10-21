@@ -1800,14 +1800,34 @@ pub fn dollar_quote_end(sql: &str, i: usize) -> Option<usize> {
 /// "x = 1 ORDER BY y" -> ("x = 1 ", "ORDER BY y").
 pub fn split_order(filter: &str) -> (&str, &str) {
     // outside quotes and parentheses: id IN (SELECT … ORDER BY ts LIMIT 5) keeps its own
-    let top = |s: &str| {
-        s.matches('\'').count().is_multiple_of(2)
-            && s.matches('(').count() == s.matches(')').count()
-    };
-    match filter.to_ascii_lowercase().rfind("order by") {
-        Some(at) if top(&filter[..at]) => filter.split_at(at),
-        _ => (filter, ""),
+    let b = filter.as_bytes();
+    let word = |c: &u8| c.is_ascii_alphanumeric() || *c == b'_';
+    let (mut depth, mut i) = (0, 0);
+    while i < b.len() {
+        match b[i] {
+            b'\'' | b'"' | b'`' => i = quote_end(b, i, false),
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b'o' | b'O' if depth == 0 && (i == 0 || !word(&b[i - 1])) => {
+                // ORDER, any spaces or line breaks, BY
+                let by = filter[i..].get(5..).map(|r| (r.len(), r.trim_start()));
+                if filter[i..]
+                    .get(..5)
+                    .is_some_and(|w| w.eq_ignore_ascii_case("order"))
+                    && by.is_some_and(|(n, r)| {
+                        r.len() < n
+                            && r.get(..2).is_some_and(|w| w.eq_ignore_ascii_case("by"))
+                            && !r.as_bytes().get(2).is_some_and(word)
+                    })
+                {
+                    return filter.split_at(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
     }
+    (filter, "")
 }
 
 /// Byte range of the statement at `offset`: statements end at `;` or at a blank line,
@@ -2890,6 +2910,18 @@ mod tests {
         assert_eq!(split_order("a = 'order by'"), ("a = 'order by'", ""));
         let sub = "id IN (SELECT id FROM x ORDER BY ts DESC LIMIT 5)";
         assert_eq!(split_order(sub), (sub, "")); // the subquery's own ORDER BY
+        assert_eq!(
+            split_order("a = 1 ORDER\n  BY b"),
+            ("a = 1 ", "ORDER\n  BY b")
+        );
+        assert_eq!(
+            split_order("s = ')' ORDER BY id"),
+            ("s = ')' ", "ORDER BY id")
+        );
+        let case = "a = 1 ORDER BY CASE WHEN s = 'order by' THEN 0 END";
+        assert_eq!(split_order(case), ("a = 1 ", &case[6..]));
+        assert_eq!(split_order("reorder by_x = 1"), ("reorder by_x = 1", ""));
+        assert_eq!(split_order("\"order by\" = 1"), ("\"order by\" = 1", ""));
         assert_eq!(
             Driver::Sqlite.select_all("t", "ORDER BY b", 5),
             "SELECT * FROM \"t\" ORDER BY b LIMIT 5;"

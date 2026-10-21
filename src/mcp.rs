@@ -66,6 +66,12 @@ pub struct TextArg {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct SearchArg {
+    /// Text to find in any cell (case-insensitive); empty shows every row again.
+    pub text: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct IndexArg {
     /// 0-based tab index as listed by get_state.
     pub index: usize,
@@ -843,7 +849,7 @@ impl Tools {
     )]
     async fn search_results(
         &self,
-        Parameters(a): Parameters<TextArg>,
+        Parameters(a): Parameters<SearchArg>,
     ) -> Result<CallToolResult, McpError> {
         self.ui("search_results", json!({ "text": a.text })).await
     }

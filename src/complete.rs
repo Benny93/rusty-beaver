@@ -176,7 +176,11 @@ pub fn suggest(text: &str, offset: usize, catalog: &Catalog) -> (usize, Vec<Sugg
         .map(|(i, _)| i)
         .unwrap_or(before.len());
     let prefix = before[start..].to_lowercase();
-    let qualifier = before[..start].strip_suffix('.').map(|q| {
+    // b."lo: the opening quote sits between the dot and the word
+    let head = before[..start]
+        .strip_suffix(['"', '`'])
+        .unwrap_or(&before[..start]);
+    let qualifier = head.strip_suffix('.').map(|q| {
         let qs = q
             .char_indices()
             .rev()
@@ -529,6 +533,12 @@ mod tests {
         assert_eq!(s[0].label, "height");
         let (_, s) = suggest("SELECT d.h FROM \"public\".\"dams\" d", 10, &c);
         assert_eq!(s[0].label, "height"); // the quoting the app writes itself
+        // b."lo: still b's columns, the quote typed after the dot
+        let (_, s) = suggest("SELECT b.\"lo FROM beavers b", 12, &c);
+        assert_eq!(
+            s.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(),
+            ["lodge_id"]
+        );
         // the alias of this statement, not one of the same name further down the editor
         let (_, s) = suggest("SELECT b. FROM beavers b; SELECT * FROM lodges b", 9, &c);
         assert_eq!(s[0].label, "name");

@@ -1542,7 +1542,9 @@ fn writes(sql: &str, mysql: bool) -> bool {
     let b = sql.as_bytes();
     let mut i = 0;
     let mut first = true;
-    let (mut prev, mut pragma) = ("", false);
+    // pragma: the statement is a PRAGMA (an = makes it a write); set: it is a SET (one naming
+    // a read-only setting is a write, SHOW and SELECT @@ of it are not)
+    let (mut prev, mut pragma, mut set) = ("", false, false);
     // EXPLAIN UPDATE … only plans it; EXPLAIN ANALYZE runs it
     let mut explain = false;
     while i < b.len() {
@@ -1565,7 +1567,7 @@ fn writes(sql: &str, mysql: bool) -> bool {
                     continue;
                 }
             }
-            b';' => (first, pragma, explain) = (true, false, false),
+            b';' => (first, pragma, explain, set) = (true, false, false, false),
             // PRAGMA user_version = 9 changes the file; PRAGMA table_info(t) only reads
             b'=' if pragma => return true,
             c if c.is_ascii_alphabetic() => {
@@ -1586,17 +1588,20 @@ fn writes(sql: &str, mysql: bool) -> bool {
                 }
                 if is(WRITES)
                     || first && is(LEADING)
-                    || is(UNLOCKS)
+                    || set && is(UNLOCKS)
                     || word.eq_ignore_ascii_case("WRITE") && prev.eq_ignore_ascii_case("READ")
                 {
                     return true;
                 }
                 if first {
                     pragma = word.eq_ignore_ascii_case("PRAGMA");
+                    set = word.eq_ignore_ascii_case("SET");
                 }
                 (first, prev) = (false, word);
                 continue;
             }
+            // READ, WRITE (two columns) is no READ WRITE
+            c if !c.is_ascii_whitespace() => prev = "",
             _ => {}
         }
         i += 1;
@@ -2713,6 +2718,16 @@ mod tests {
             assert!(is_write(unlock), "{unlock}");
         }
         assert!(!is_write("PRAGMA table_info(t)") && !is_write("SET search_path = app"));
+        // reading the setting is no write, nor are columns called read and write
+        for read in [
+            "SHOW transaction_read_only",
+            "SHOW default_transaction_read_only",
+            "SELECT @@transaction_read_only",
+            "PRAGMA query_only",
+            "SELECT read, write FROM acl",
+        ] {
+            assert!(!is_write(read), "{read}");
+        }
         assert!(
             !is_write("EXPLAIN UPDATE t SET a = 1")
                 && !is_write("EXPLAIN QUERY PLAN DELETE FROM t")

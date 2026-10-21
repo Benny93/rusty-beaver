@@ -29,6 +29,8 @@ mysql = { version = "28", default-features = false, features = ["default-rust", 
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 # Vault over HTTPS, trusting the OS certificate store (internal CAs).
 ureq = { version = "3", features = ["platform-verifier", "json"] }
+# Display width of text-view cells (日本 takes two columns); already used by the editor.
+unicode-width = "0.2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.5"

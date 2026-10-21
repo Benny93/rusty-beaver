@@ -1631,6 +1631,7 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
             out
         }
         "txt" | "text" => {
+            use unicode_width::UnicodeWidthStr as _;
             // Aligned plain text, as DBeaver's Text view; long cells are cut at 60 characters.
             let cut = |v: &str| -> String {
                 let v = v.replace(['\r', '\n', '\t'], " ");
@@ -1645,18 +1646,12 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
                 .map(|row| row.iter().map(|v| cut(v)).collect())
                 .collect();
             let widths: Vec<usize> = (0..r.columns.len())
-                .map(|c| {
-                    cells
-                        .iter()
-                        .map(|row| row[c].chars().count())
-                        .max()
-                        .unwrap_or(0)
-                })
+                .map(|c| cells.iter().map(|row| row[c].width()).max().unwrap_or(0))
                 .collect();
             let line = |row: &[String]| {
                 row.iter()
                     .zip(&widths)
-                    .map(|(v, w)| format!("{v:<w$}"))
+                    .map(|(v, w)| format!("{v}{}", " ".repeat(w - v.width()))) // by display width
                     .collect::<Vec<_>>()
                     .join(" | ")
                     .trim_end()
@@ -2104,6 +2099,19 @@ mod tests {
         assert_eq!(
             export(&r, "txt", Driver::Sqlite, "t"),
             "a   | b\n----+-----\n1   | NULL\nx|y | it's\n"
+        );
+        let wide = QueryResult {
+            columns: vec!["n".into(), "x".into()],
+            rows: vec![
+                vec!["日本".into(), "1".into()],
+                vec!["ab".into(), "2".into()],
+            ],
+            ..Default::default()
+        };
+        // 日本 is four columns wide on screen: the | lines up
+        assert_eq!(
+            export(&wide, "txt", Driver::Sqlite, "t"),
+            "n    | x\n-----+--\n日本 | 1\nab   | 2\n"
         );
     }
 

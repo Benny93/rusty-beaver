@@ -6842,6 +6842,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-postgres-rustls",
+ "unicode-width",
  "ureq",
  "xcap",
 ]

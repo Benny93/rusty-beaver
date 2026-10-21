@@ -159,20 +159,21 @@ pub fn chart_columns(r: &QueryResult) -> (Option<usize>, Vec<usize>) {
 /// (label, value) bars of the rows as shown, at most `max`; repeated labels get a "#n" suffix
 /// so every row stays its own bar.
 pub fn chart_data(g: &Grid, label: Option<usize>, value: usize, max: usize) -> Vec<(String, f64)> {
-    let mut seen = std::collections::HashMap::<String, usize>::new();
+    let mut used = std::collections::HashSet::<String>::new();
     g.order
         .iter()
         .filter(|id| !g.changes.deleted.contains(id))
         .take(max)
         .enumerate()
         .map(|(i, &id)| {
-            let mut l = label
+            let base = label
                 .map(|c| g.value(id, c))
                 .unwrap_or_else(|| (i + 1).to_string());
-            let n = seen.entry(l.clone()).or_default();
-            *n += 1;
-            if *n > 1 {
-                l = format!("{l} #{n}");
+            // "a #2" for the second "a", unless a row is called that already
+            let (mut l, mut n) = (base.clone(), 1);
+            while !used.insert(l.clone()) {
+                n += 1;
+                l = format!("{base} #{n}");
             }
             (l, num(&g.value(id, value)).unwrap_or(0.))
         })
@@ -441,6 +442,16 @@ mod tests {
                 ("Marco #2".into(), 1.)
             ]
         );
+        g.set(QueryResult {
+            columns: vec!["l".into(), "n".into()],
+            rows: cells(vec![vec!["a", "1"], vec!["a", "2"], vec!["a #2", "3"]]),
+            ..Default::default()
+        });
+        let labels: Vec<String> = chart_data(&g, Some(0), 1, 10)
+            .into_iter()
+            .map(|d| d.0)
+            .collect();
+        assert_eq!(labels, ["a", "a #2", "a #2 #2"]); // a real "a #2" is no repeat
         g.set(QueryResult {
             columns: vec!["year".into(), "n".into()],
             rows: cells(vec![vec!["2020", "4"]]),

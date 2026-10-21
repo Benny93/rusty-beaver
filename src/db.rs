@@ -217,6 +217,16 @@ impl Changes {
             key.iter()
                 .map(|&c| match rows[row][c].as_deref() {
                     None => format!("{} IS NULL", q(c)),
+                    // SQLite: a column without a type keeps 5 and '5' apart, so a number is
+                    // also compared as a number
+                    Some(v)
+                        if driver == Driver::Sqlite
+                            && v.parse::<f64>().is_ok_and(f64::is_finite)
+                            && !v.starts_with(['+', '.'])
+                            && v.trim() == v =>
+                    {
+                        format!("({0} = {1} OR {0} = {2})", q(c), driver.literal(v), v)
+                    }
                     Some(v) => format!("{} = {}", q(c), driver.literal(v)),
                 })
                 .collect::<Vec<_>>()
@@ -2260,6 +2270,22 @@ mod tests {
     }
 
     #[test]
+    fn sqlite_rows_with_untyped_number_keys_can_be_saved() {
+        // no declared type: 5 and '5' are not equal, so WHERE id = '5' found nothing
+        let mut s = Session::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+        s.query_all("CREATE TABLE t(id PRIMARY KEY, v); INSERT INTO t VALUES (5, 'a');")
+            .unwrap();
+        let r = s.query("SELECT * FROM t").unwrap();
+        let mut c = Changes::default();
+        c.cells.insert((0, 1), Some("b".into()));
+        let sql = c
+            .to_sql(Driver::Sqlite, "t", &r.columns, &r.rows, &[0])
+            .unwrap();
+        s.apply(&sql).unwrap();
+        assert_eq!(text(&s.query("SELECT v FROM t").unwrap().rows[0][0]), "b");
+    }
+
+    #[test]
     fn a_grid_save_changes_one_row_per_statement() {
         // SQLite lets a TEXT primary key hold NULL twice: WHERE a IS NULL matches both
         let mut s = Session::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
@@ -2311,9 +2337,9 @@ mod tests {
         assert_eq!(
             sql,
             [
-                "DELETE FROM \"t\" WHERE \"id\" = '3';",
+                "DELETE FROM \"t\" WHERE (\"id\" = '3' OR \"id\" = 3);",
                 "INSERT INTO \"t\" (\"name\") VALUES ('new');",
-                "UPDATE \"t\" SET \"name\" = 'it''s', \"n\" = NULL WHERE \"id\" = '2';",
+                "UPDATE \"t\" SET \"name\" = 'it''s', \"n\" = NULL WHERE (\"id\" = '2' OR \"id\" = 2);",
             ]
         );
         s.apply(&sql).unwrap();

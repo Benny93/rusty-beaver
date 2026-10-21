@@ -361,9 +361,10 @@ pub fn format_sql_as(sql: &str, mysql: bool) -> String {
                 }
             }
             Tok::Open => {
-                // "count(" for function calls, "IN (" after keywords
+                // "count(" for function calls, "IN (" after keywords; CAST is a call (MySQL
+                // refuses CAST (…))
                 let call = i > 0
-                    && matches!(toks[i - 1], Tok::Word(w) if !KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(w)));
+                    && matches!(toks[i - 1], Tok::Word(w) if w.eq_ignore_ascii_case("CAST") || !KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(w)));
                 if call {
                     while out.ends_with(' ') {
                         out.pop();
@@ -454,6 +455,8 @@ mod tests {
         assert!(half.contains(".5,") && half.contains(".25"), "{half}"); // numbers stay whole
         assert!(!half.contains(". 5") && !half.contains(". 25"), "{half}");
         assert!(format_sql("select a=äb from t").contains("a = äb"));
+        // MySQL refuses CAST (…) with a space (ERROR 1064)
+        assert!(format_sql("select cast(x as char) from t").contains("CAST(x AS char)"));
         assert!(
             format_sql("select a$b, x$ from t").contains("a$b,"),
             "{}",

@@ -705,7 +705,15 @@ impl Session {
             }
         }
         // …a partition is one of its table (columns and keys come from there)…
-        if driver == Driver::Postgres {
+        // (partitions came with Postgres 10; on older servers the query would fail, and
+        // inside a transaction abort it)
+        let partitions = driver == Driver::Postgres
+            && self
+                .query("SHOW server_version_num")
+                .ok()
+                .and_then(|r| r.rows.first()?.first()?.as_deref()?.parse::<u32>().ok())
+                .is_some_and(|v| v >= 100_000);
+        if partitions {
             let sql = format!(
                 "SELECT (SELECT quote_ident(pn.nspname) || '.' || quote_ident(pc.relname) FROM pg_inherits i \
                  JOIN pg_class pc ON pc.oid = i.inhparent JOIN pg_namespace pn ON pn.oid = pc.relnamespace \
@@ -786,7 +794,7 @@ impl Session {
             }
         }
         // a partitioned table: PARTITION BY RANGE (id), else it would be a plain one
-        let partition_by = if pg {
+        let partition_by = if partitions {
             self.query(&format!(
                 "SELECT pg_get_partkeydef(to_regclass({}))",
                 driver.literal(&driver.table_ref(table))

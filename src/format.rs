@@ -196,11 +196,13 @@ fn lex(sql: &str, mysql: bool) -> Vec<Tok<'_>> {
                 || c >= 0x80
                 || c == b'.' && b.get(i + 1).is_some_and(u8::is_ascii_digit) =>
             {
+                // a$b is one name in Postgres and MySQL ($ after the first character)
                 while i < b.len()
                     && (b[i].is_ascii_alphanumeric()
                         || b[i] == b'_'
                         || b[i] == b'.'
-                        || b[i] >= 0x80)
+                        || b[i] >= 0x80
+                        || b[i] == b'$')
                 {
                     i += 1;
                     // the sign of an exponent: 1.5e-3
@@ -451,6 +453,11 @@ mod tests {
         assert!(half.contains(".5,") && half.contains(".25"), "{half}"); // numbers stay whole
         assert!(!half.contains(". 5") && !half.contains(". 25"), "{half}");
         assert!(format_sql("select a=äb from t").contains("a = äb"));
+        assert!(
+            format_sql("select a$b, x$ from t").contains("a$b,"),
+            "{}",
+            format_sql("select a$b from t")
+        );
         let u = r#"select U&'d\0061t', U&"d!0061t" UESCAPE '!' from t"#;
         assert!(
             format_sql(u).contains(r#"U&'d\0061t',"#),

@@ -163,6 +163,11 @@ fn aliases(text: &str) -> HashMap<String, String> {
 pub fn suggest(text: &str, offset: usize, catalog: &Catalog) -> (usize, Vec<Suggestion>) {
     // Offsets come from agents too: never cut inside a multi-byte character.
     let before = &text[..text.floor_char_boundary(offset)];
+    // aliases of the statement at the cursor, not of others in the editor that reuse a name
+    // ponytail: split at every ;, also one inside a string
+    let at = before.len();
+    let statement = &text[before.rfind(';').map_or(0, |i| i + 1)
+        ..text[at..].find(';').map_or(text.len(), |i| at + i)];
     let start = before
         .char_indices()
         .rev()
@@ -191,7 +196,7 @@ pub fn suggest(text: &str, offset: usize, catalog: &Catalog) -> (usize, Vec<Sugg
     };
     if let Some(q) = qualifier {
         // alias.col / table.col
-        let table = aliases(text).get(&q).cloned().unwrap_or(q);
+        let table = aliases(statement).get(&q).cloned().unwrap_or(q);
         for (name, ty) in catalog
             .columns
             .get(&table.to_lowercase())
@@ -244,7 +249,7 @@ pub fn suggest(text: &str, offset: usize, catalog: &Catalog) -> (usize, Vec<Sugg
         });
     }
     // Columns of the tables this statement uses first, then everything else.
-    let used: Vec<String> = aliases(text)
+    let used: Vec<String> = aliases(statement)
         .into_values()
         .map(|t| t.to_lowercase())
         .collect();
@@ -524,6 +529,10 @@ mod tests {
         assert_eq!(s[0].label, "height");
         let (_, s) = suggest("SELECT d.h FROM \"public\".\"dams\" d", 10, &c);
         assert_eq!(s[0].label, "height"); // the quoting the app writes itself
+        // the alias of this statement, not one of the same name further down the editor
+        let (_, s) = suggest("SELECT b. FROM beavers b; SELECT * FROM lodges b", 9, &c);
+        assert_eq!(s[0].label, "name");
+        assert!(s.iter().any(|x| x.label == "lodge_id"), "{s:?}");
         let (_, s) = suggest("SELECT l. FROM beavers b, lodges l", 9, &c);
         assert_eq!(s[0].label, "name"); // comma-separated FROM list
         let (start, s) = suggest("SELECT * FROM public.da", 23, &c);

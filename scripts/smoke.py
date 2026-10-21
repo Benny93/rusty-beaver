@@ -287,7 +287,12 @@ def main():
             # a BEGIN whose session was disconnected while it ran leaves no transaction behind
             import threading
             slow = "BEGIN; WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 30000000) SELECT count(*) FROM n"
-            th = threading.Thread(target=lambda: call("run_sql", {"connection": DB, "sql": slow}))
+            def slow_run():
+                try:
+                    call("run_sql", {"connection": DB, "sql": slow})
+                except AssertionError:
+                    pass  # the disconnect interrupts it
+            th = threading.Thread(target=slow_run)
             th.start()
             time.sleep(0.3)
             call("disconnect", {"connection": DB})
@@ -334,6 +339,14 @@ def main():
                     break
                 except AssertionError:
                     pass
+            th.join(10)
+            assert r.get("ok"), r
+            # disconnecting stops what runs on that session (it could not be cancelled after)
+            r.clear()
+            th = threading.Thread(target=long_query)
+            th.start()
+            time.sleep(0.5)
+            call("disconnect", {"connection": DB})
             th.join(10)
             assert r.get("ok"), r
 

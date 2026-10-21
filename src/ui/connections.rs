@@ -554,6 +554,18 @@ impl AppView {
     }
 
     pub(super) fn disconnect(&mut self, id: u64, cx: &mut Context<Self>) {
+        // what still runs on the session stops too: without its canceller nothing could stop
+        // it, and a later cancel would hit the next session's query
+        if self.tabs.iter().any(|t| t.running && t.conn == id)
+            && let Some(c) = self
+                .conn_ix(id)
+                .and_then(|i| self.conns[i].canceller.clone())
+        {
+            cx.background_spawn(async move {
+                let _ = c.cancel();
+            })
+            .detach();
+        }
         if let Some(ix) = self.conn_ix(id) {
             let c = &mut self.conns[ix];
             (c.session, c.status, c.expanded) = (None, ConnStatus::Disconnected, false);

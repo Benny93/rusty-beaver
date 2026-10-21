@@ -35,7 +35,7 @@ impl Grid {
 
     /// Show only rows containing `text` (case-insensitive); empty shows all. Keeps the sort.
     pub fn set_search(&mut self, text: &str) {
-        self.search = text.trim().to_lowercase();
+        self.search = fold(text.trim());
         // Shown rows keep their place; rows hidden by an earlier search follow in their
         // original order. A position table: 10,000 rows per keystroke stay instant.
         let n = self.r.rows.len();
@@ -55,8 +55,7 @@ impl Grid {
 
     fn matches(&self, id: usize) -> bool {
         self.search.is_empty()
-            || (0..self.r.columns.len())
-                .any(|c| self.value(id, c).to_lowercase().contains(&self.search))
+            || (0..self.r.columns.len()).any(|c| fold(&self.value(id, c)).contains(&self.search))
     }
 
     /// Row index in `r.rows` of a display row.
@@ -281,6 +280,12 @@ pub fn in_list(vals: &[String], driver: crate::db::Driver, ty: Option<&str>) -> 
         })
         .collect();
     format!("({})", vals.join(", "))
+}
+
+/// Lower case for search, letter by letter: str::to_lowercase writes a word-final Σ as ς, so
+/// ΟΔΟΣ would not be found in ΟΔΟΣΑΚΗΣ.
+fn fold(s: &str) -> String {
+    s.chars().flat_map(char::to_lowercase).collect()
 }
 
 /// A value as a number; text like "NaN" or "inf" is no number here.
@@ -523,6 +528,14 @@ mod tests {
         g.set_search("abc"); // the edited row no longer matches
         assert!(g.order.is_empty());
         g.revert(); // back to abc: found again
+        assert_eq!(g.order, [0]);
+        // Σ at a word's end lowercases to ς, inside one to σ: ΟΔΟΣ is found in ΟΔΟΣΑΚΗΣ
+        g.set(QueryResult {
+            columns: vec!["a".into()],
+            rows: cells(vec![vec!["ΟΔΟΣΑΚΗΣ"]]),
+            ..Default::default()
+        });
+        g.set_search("ΟΔΟΣ");
         assert_eq!(g.order, [0]);
     }
 

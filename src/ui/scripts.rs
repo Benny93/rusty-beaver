@@ -95,7 +95,7 @@ impl AppView {
                     .collect();
                 let path = session_path();
                 let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
-                if let Err(e) = std::fs::write(&path, serde_json::to_string_pretty(&json!({ "scripts": scripts })).unwrap()) {
+                if let Err(e) = db::write_atomic(&path, serde_json::to_string_pretty(&json!({ "scripts": scripts })).unwrap()) {
                     v.status = format!("Could not save open scripts: {e}");
                 }
             });

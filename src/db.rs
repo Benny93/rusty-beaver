@@ -1077,6 +1077,17 @@ fn mysql_query(c: &mut mysql::Conn, sql: &str) -> Result<Vec<QueryResult>, Strin
     Ok(out)
 }
 
+/// Write a file through a temporary one renamed over it: a crash midway leaves the old file,
+/// not half of the new one.
+pub fn write_atomic(path: &std::path::Path, data: impl AsRef<[u8]>) -> std::io::Result<()> {
+    // a symlinked file (dotfiles) is written where it points, the link stays
+    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    std::fs::write(&tmp, data)?;
+    std::fs::rename(&tmp, path)
+}
+
 pub fn config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -1206,8 +1217,7 @@ pub fn save_connections(list: &[ConnConfig]) -> Result<Vec<String>, String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    std::fs::write(&path, serde_json::to_string_pretty(&file).unwrap())
-        .map_err(|e| e.to_string())?;
+    write_atomic(&path, serde_json::to_string_pretty(&file).unwrap()).map_err(|e| e.to_string())?;
     Ok(warnings)
 }
 
@@ -2105,7 +2115,10 @@ mod tests {
         let (_, _, note) = load_connections();
         let aside = file.with_extension("json.invalid");
         assert!(note.unwrap().contains("did not load"));
-        assert_eq!(std::fs::read_to_string(&aside).unwrap(), r#"[{"name":"typo",}]"#);
+        assert_eq!(
+            std::fs::read_to_string(&aside).unwrap(),
+            r#"[{"name":"typo",}]"#
+        );
         let _ = std::fs::remove_file(&aside);
         let _ = std::fs::remove_file(&file);
     }

@@ -53,11 +53,7 @@ fn save_to(p: &std::path::Path, entries: &[Entry]) {
         .iter()
         .map(|e| serde_json::to_string(e).unwrap() + "\n")
         .collect();
-    // a new file renamed over the old one: a crash midway keeps the old history
-    let tmp = p.with_extension("jsonl.tmp");
-    if std::fs::write(&tmp, body).is_ok() {
-        let _ = std::fs::rename(&tmp, p);
-    }
+    let _ = crate::db::write_atomic(p, body);
 }
 
 pub fn append(e: &Entry) {

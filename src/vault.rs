@@ -131,7 +131,12 @@ fn call(
     };
     let mut res = res.map_err(|e| format!("Vault at {addr}: {e}"))?;
     let status = res.status().as_u16();
-    let json = res.body_mut().read_json::<Value>().unwrap_or(Value::Null);
+    // a proxy's error page is no JSON: its text (cut short) is still the best detail
+    let text = res.body_mut().read_to_string().unwrap_or_default();
+    let json = serde_json::from_str(&text).unwrap_or_else(|_| match text.trim() {
+        "" => Value::Null,
+        t => Value::String(t.chars().take(200).collect()),
+    });
     Ok((status, json))
 }
 
@@ -149,6 +154,7 @@ fn vault_errors(v: &Value) -> String {
     // a KV v2 path without data/ answers 404 with no errors, only a warning saying so
     list("errors")
         .or_else(|| list("warnings"))
+        .or_else(|| v.as_str().map(String::from))
         .unwrap_or_else(|| "no details".into())
 }
 
@@ -599,6 +605,13 @@ mod tests {
                     (403, r#"{"errors":["permission denied"]}"#.to_string(), None)
                 } else if target.starts_with("/v1/auth/token/lookup-self") {
                     (200, "{}".to_string(), None)
+                } else if target.starts_with("/v1/kv/proxy") {
+                    // a proxy in front of Vault answers with its own page
+                    (
+                        502,
+                        "<html><h1>502 Bad Gateway</h1></html>".to_string(),
+                        None,
+                    )
                 } else if target.starts_with("/v1/kv/team") {
                     (404, r#"{"errors":[],"warnings":["Invalid path for a versioned K/V secrets engine. See the API docs for the appropriate API endpoints to use. If using the Vault CLI, use 'vault kv get' for this operation."]}"#.to_string(), None)
                 } else if target.starts_with("/v1/kv/data/pin") {
@@ -700,6 +713,16 @@ mod tests {
             ..c.clone()
         };
         assert!(resolve(&team, &browser).unwrap_err().contains("versioned"));
+        // a body that is no JSON: its text, not "no details"
+        let proxy = ConnConfig {
+            vault_path: "kv/proxy".into(),
+            ..c.clone()
+        };
+        assert!(
+            resolve(&proxy, &browser)
+                .unwrap_err()
+                .contains("Bad Gateway")
+        );
         // a secret written as JSON can hold a number
         let pin = ConnConfig {
             vault_path: "kv/data/pin".into(),

@@ -123,7 +123,7 @@ impl AppView {
         }
         // Production: changing data needs a yes (the dialog, or `confirm` from an agent).
         let conn = t.conn;
-        if db::is_write(&sql)
+        if db::is_write(&sql, mysql)
             && let Some(name) = self
                 .conn_ix(conn)
                 .filter(|&i| self.conns[i].cfg.read_only)
@@ -139,7 +139,7 @@ impl AppView {
             );
         }
         if !confirmed
-            && db::is_write(&sql)
+            && db::is_write(&sql, mysql)
             && let Some(name) = self
                 .conn_ix(conn)
                 .filter(|&i| self.conns[i].cfg.production)
@@ -248,7 +248,7 @@ impl AppView {
             .first()
             .is_some_and(|(w1, w2)| w1 == "BEGIN" || w1 == "START" && w2 == "TRANSACTION");
         // Smart commit: only a change opens the transaction; reads run inside an open one.
-        let write = db::is_write(&sql);
+        let write = db::is_write(&sql, mysql);
         // session settings are writes for the prompts, but no data to put in a transaction
         // (SQLite ignores PRAGMA foreign_keys inside one, DISCARD ALL refuses to run there)
         let setting = heads

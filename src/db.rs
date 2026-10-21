@@ -984,7 +984,7 @@ fn pg_capped(sql: &str) -> Option<String> {
     let heads = statement_heads(sql, false);
     let reads = heads.len() == 1
         && matches!(heads[0].0.as_str(), "SELECT" | "WITH" | "VALUES" | "TABLE")
-        && !is_write(sql);
+        && !is_write(sql, false);
     let body = sql.trim_end().trim_end_matches(';');
     // "SELECT …; -- note": the ; inside would be a syntax error in the subquery
     let reads = reads && !body.contains(';');
@@ -1594,8 +1594,9 @@ fn param_spans(sql: &str) -> Vec<(std::ops::Range<usize>, String)> {
 /// ponytail: keyword scan errs on the side of asking (a column named "update" asks too); it
 /// reads the SQL both as standard SQL and as MySQL (\' escapes, # comments): a write either
 /// way counts
-pub fn is_write(sql: &str) -> bool {
-    writes(sql, false) || writes(sql, true)
+pub fn is_write(sql: &str, mysql: bool) -> bool {
+    // in the connection's dialect: MySQL's --x is code, Postgres' --x a comment
+    writes(sql, mysql)
 }
 
 /// A `--` (or MySQL `#`) comment starts at `i`. MySQL: -- only before a space (1--1 is
@@ -1653,6 +1654,7 @@ fn writes(sql: &str, mysql: bool) -> bool {
     let mut explain = false;
     while i < b.len() {
         match b[i] {
+            b'\'' if e_string(b, i) => i = quote_end(b, i, true),
             b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
             b'-' | b'#' if line_comment(b, i, mysql) => {
                 while i < b.len() && b[i] != b'\n' {
@@ -2270,6 +2272,11 @@ pub fn texts(rows: &[Vec<Option<String>>]) -> Vec<Vec<String>> {
 
 #[cfg(test)]
 mod tests {
+    /// Either dialect sees a write (the tests below hold for both unless they say).
+    fn is_write_any(sql: &str) -> bool {
+        is_write(sql, false) || is_write(sql, true)
+    }
+
     use super::*;
 
     #[test]
@@ -2905,31 +2912,35 @@ mod tests {
 
     #[test]
     fn write_detection() {
-        assert!(!is_write(
+        assert!(!is_write_any(
             "SELECT 'drop table x', replace(name, 'a', 'b') FROM t -- delete\n/* update */"
         ));
-        assert!(is_write("with x as (select 1) delete from t"));
-        assert!(is_write("SELECT 1; Update t SET a = 1"));
+        assert!(is_write_any("with x as (select 1) delete from t"));
+        assert!(is_write_any("SELECT 1; Update t SET a = 1"));
         // MySQL: --x is minus minus x, and the body of /*! … */ runs
-        assert!(is_write("SELECT 1--1; DROP TABLE t"));
-        assert!(is_write("SELECT 1 /*!50000 ; DROP TABLE t */"));
-        assert!(!is_write("SELECT 1 /* ; DROP TABLE t */"));
+        assert!(is_write("SELECT 1--1; DROP TABLE t", true));
+        // …while Postgres and SQLite read --x as a comment: no write, no read-only refusal
+        assert!(!is_write("SELECT * FROM t --delete later", false));
+        assert!(!is_write("SELECT 1\n--DROP TABLE x", false));
+        assert!(is_write(r"SELECT E'it\'s'; DELETE FROM t; --'", false));
+        assert!(is_write_any("SELECT 1 /*!50000 ; DROP TABLE t */"));
+        assert!(!is_write_any("SELECT 1 /* ; DROP TABLE t */"));
         // the comment ends at */, also when * follows it
-        assert!(is_write("SELECT /* cols */* FROM t; DELETE FROM t"));
-        assert!(!is_write("EXPLAIN SELECT * FROM updates_log"));
-        assert!(is_write("REPLACE INTO t VALUES (1)"));
-        assert!(is_write("SELECT $a$'$a$; DELETE FROM t; --'"));
-        assert!(!is_write("SELECT $$ delete $$, $1"));
+        assert!(is_write_any("SELECT /* cols */* FROM t; DELETE FROM t"));
+        assert!(!is_write_any("EXPLAIN SELECT * FROM updates_log"));
+        assert!(is_write_any("REPLACE INTO t VALUES (1)"));
+        assert!(is_write_any("SELECT $a$'$a$; DELETE FROM t; --'"));
+        assert!(!is_write_any("SELECT $$ delete $$, $1"));
         // MySQL and E'' backslash escapes, MySQL # comments; PG's #- operator is no comment
-        assert!(is_write(
+        assert!(is_write_any(
             r"SELECT * FROM t WHERE n = 'O\'Brien'; DELETE FROM t"
         ));
-        assert!(is_write(r"SELECT E'it\'s'; DELETE FROM t; --'"));
-        assert!(is_write("SELECT 1 # don't\nDELETE FROM t"));
-        assert!(is_write("SELECT j #- '{a}' FROM t; DELETE FROM t"));
-        assert!(!is_write(r"SELECT 'a\', 'b' -- update"));
-        assert!(is_write("SELECT * INTO newt FROM t"));
-        assert!(!is_write("SELECT id, comment, lock FROM reviews")); // column names
+        assert!(is_write_any(r"SELECT E'it\'s'; DELETE FROM t; --'"));
+        assert!(is_write_any("SELECT 1 # don't\nDELETE FROM t"));
+        assert!(is_write_any("SELECT j #- '{a}' FROM t; DELETE FROM t"));
+        assert!(!is_write_any(r"SELECT 'a\', 'b' -- update"));
+        assert!(is_write_any("SELECT * INTO newt FROM t"));
+        assert!(!is_write_any("SELECT id, comment, lock FROM reviews")); // column names
         // switching read-only off (or resetting it) is a write; reading settings is not
         for unlock in [
             "RESET ALL",
@@ -2940,9 +2951,9 @@ mod tests {
             "PRAGMA query_only = OFF",
             "PRAGMA user_version = 9",
         ] {
-            assert!(is_write(unlock), "{unlock}");
+            assert!(is_write_any(unlock), "{unlock}");
         }
-        assert!(!is_write("PRAGMA table_info(t)") && !is_write("SET search_path = app"));
+        assert!(!is_write_any("PRAGMA table_info(t)") && !is_write_any("SET search_path = app"));
         // reading the setting is no write, nor are columns called read and write
         for read in [
             "SHOW transaction_read_only",
@@ -2951,19 +2962,19 @@ mod tests {
             "PRAGMA query_only",
             "SELECT read, write FROM acl",
         ] {
-            assert!(!is_write(read), "{read}");
+            assert!(!is_write_any(read), "{read}");
         }
         assert!(
-            !is_write("EXPLAIN UPDATE t SET a = 1")
-                && !is_write("EXPLAIN QUERY PLAN DELETE FROM t")
+            !is_write_any("EXPLAIN UPDATE t SET a = 1")
+                && !is_write_any("EXPLAIN QUERY PLAN DELETE FROM t")
         );
         assert!(
-            is_write("EXPLAIN ANALYZE DELETE FROM t")
-                && is_write("EXPLAIN (ANALYZE) DELETE FROM t")
-                && is_write("EXPLAIN ANALYSE DELETE FROM t") // Postgres takes the British spelling
-                && is_write("EXPLAIN (ANALYSE) DELETE FROM t")
+            is_write_any("EXPLAIN ANALYZE DELETE FROM t")
+                && is_write_any("EXPLAIN (ANALYZE) DELETE FROM t")
+                && is_write_any("EXPLAIN ANALYSE DELETE FROM t") // Postgres takes the British spelling
+                && is_write_any("EXPLAIN (ANALYSE) DELETE FROM t")
         );
-        assert!(is_write("EXPLAIN SELECT 1; DELETE FROM t"));
+        assert!(is_write_any("EXPLAIN SELECT 1; DELETE FROM t"));
         for maintenance in [
             "REFRESH MATERIALIZED VIEW mv",
             "ANALYZE t",
@@ -2972,9 +2983,9 @@ mod tests {
             "REPAIR TABLE t",
             "FLUSH TABLES",
         ] {
-            assert!(is_write(maintenance), "{maintenance}");
+            assert!(is_write_any(maintenance), "{maintenance}");
         }
-        assert!(is_write("SELECT 1; COMMENT ON TABLE t IS 'x'"));
+        assert!(is_write_any("SELECT 1; COMMENT ON TABLE t IS 'x'"));
     }
 
     #[test]

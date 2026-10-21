@@ -79,8 +79,14 @@ impl Driver {
             (c, "") => format!(" WHERE {c}"),
             (c, o) => format!(" WHERE {c} {o}"),
         };
+        // a line comment ending the filter would swallow the LIMIT
+        let sep = if filter.contains("--") || filter.contains('#') {
+            "\n"
+        } else {
+            " "
+        };
         format!(
-            "SELECT * FROM {}{filter} LIMIT {limit};",
+            "SELECT * FROM {}{filter}{sep}LIMIT {limit};",
             self.table_ref(table)
         )
     }
@@ -2853,6 +2859,12 @@ mod tests {
             Driver::Sqlite.select_all("t", "ORDER BY b", 5),
             "SELECT * FROM \"t\" ORDER BY b LIMIT 5;"
         );
+        let mut db = Session::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+        db.query("CREATE TABLE t(i); INSERT INTO t VALUES (1),(2),(3)")
+            .unwrap();
+        // a comment at the end of the filter leaves the LIMIT in force
+        let q = Driver::Sqlite.select_all("t", "i > 0 -- x", 2);
+        assert_eq!(db.query(&q).unwrap().rows.len(), 2, "{q}");
         let v: std::collections::HashMap<String, String> = [
             ("rank".to_string(), "'Private'".to_string()),
             ("min".into(), "3".into()),

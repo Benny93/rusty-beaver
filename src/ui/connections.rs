@@ -317,7 +317,8 @@ impl AppView {
                 // Refresh an open data tab of that table (unless it has unsaved edits).
                 if let Some(i) = v.tabs.iter().position(|t| {
                     t.conn == id
-                        && t.kind == TabKind::Table(table.clone())
+                        // Lodges is the tab of lodges (names match regardless of case)
+                        && matches!(&t.kind, TabKind::Table(n) if n.eq_ignore_ascii_case(&table))
                         && t.grid.read(cx).delegate().changes.is_empty()
                 }) {
                     v.reload_table(i, w, cx, Box::new(|_, _, _, _| {}));

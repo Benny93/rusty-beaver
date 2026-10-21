@@ -366,6 +366,15 @@ def main():
             csv = os.path.join(tmp, "lodges.csv")
             open(csv, "w").write("name,river\nCSV Lodge,Rhine\n")
             assert call("import_csv", {"connection": DB, "table": "lodges", "path": csv})["imported"] == 1
+            # the open tab of the table shows the import, also when the name is typed otherwise
+            call("open_table", {"connection": DB, "table": "lodges"})
+            before = call("set_filter", {"filter": ""})["row_count"]  # an earlier test filtered it
+            call("import_csv", {"connection": DB, "table": "Lodges", "path": csv})
+            for _ in range(30):
+                if call("get_results")["row_count"] == before + 1:
+                    break
+                time.sleep(0.1)
+            assert call("get_results")["row_count"] == before + 1
             call("run_sql", {"connection": DB, "sql": "SELECT name, logs_chewed FROM beavers"})
             assert call("chart", {})["value_columns"] == ["logs_chewed"]
             call("chart", {"on": False})

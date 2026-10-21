@@ -444,7 +444,15 @@ impl AppView {
         );
         cx.spawn_in(window, async move |this, cx| {
             if answer.await == Ok(0) {
-                let _ = this.update_in(cx, |v, w, cx| v.delete_connection(id, w, cx));
+                let _ = this.update_in(cx, |v, w, cx| {
+                    // edits may have come in while the prompt was open
+                    let tabs: Vec<usize> = (0..v.tabs.len())
+                        .filter(|&i| v.tabs[i].conn == id)
+                        .collect();
+                    if v.unsaved_edits(tabs, cx).is_ok() {
+                        v.delete_connection(id, w, cx)
+                    }
+                });
             }
         })
         .detach();

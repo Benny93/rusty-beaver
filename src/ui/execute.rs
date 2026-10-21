@@ -215,20 +215,29 @@ impl AppView {
         let in_tx = self.conn_ix(conn).is_some_and(|i| self.conns[i].in_tx);
         let head = sql.trim_start().to_ascii_uppercase();
         let starts = |words: &[&str]| words.iter().any(|k| head.starts_with(k));
-        // MySQL commits before and after DDL: no transaction is open afterwards
+        // MySQL commits the open transaction when it runs DDL (temporary tables aside), also
+        // when the DDL then fails; only one that does not parse leaves it open. Settled once
+        // the statement ran.
+        // ponytail: the first statement only; DDL later in a script goes unnoticed
+        let mut words = head.split_whitespace();
+        let (w1, w2) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
         let mysql_ddl = self
             .conn_ix(conn)
             .is_some_and(|i| self.conns[i].cfg.driver == Driver::Mysql)
-            && starts(&["CREATE", "ALTER", "DROP", "TRUNCATE", "RENAME"]);
-        let ends_tx = starts(&["COMMIT", "ROLLBACK", "END"]) || mysql_ddl;
+            && (matches!(
+                w1,
+                "CREATE" | "ALTER" | "DROP" | "TRUNCATE" | "RENAME" | "GRANT" | "REVOKE"
+            ) || w1 == "LOCK" && w2 == "TABLES")
+            && w2 != "TEMPORARY";
+        let ends_tx = starts(&["COMMIT", "ROLLBACK", "END"]);
         // Smart commit: only a change opens the transaction; reads run inside an open one.
         let write = db::is_write(&sql);
-        let need_begin = manual && !in_tx && write && !ends_tx;
+        let need_begin = manual && !in_tx && write && !ends_tx && !mysql_ddl;
         if manual && let Some(i) = self.conn_ix(conn) {
             let c = &mut self.conns[i];
             if ends_tx {
                 (c.in_tx, c.tx_statements) = (false, 0);
-            } else if write {
+            } else if write && !mysql_ddl {
                 (c.in_tx, c.tx_statements) = (true, c.tx_statements + 1);
             }
         }
@@ -244,6 +253,13 @@ impl AppView {
             window,
             cx,
             Box::new(move |v, r, window, cx| {
+                if manual
+                    && mysql_ddl
+                    && r.as_ref().err().is_none_or(|e| !e.contains("ERROR 1064"))
+                    && let Some(i) = v.conn_ix(conn)
+                {
+                    (v.conns[i].in_tx, v.conns[i].tx_statements) = (false, 0);
+                }
                 // The last result is shown; a script's others are one click away.
                 let r = r.map(|mut all| {
                     let last = all.pop().unwrap_or_default();

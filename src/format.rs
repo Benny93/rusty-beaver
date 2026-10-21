@@ -212,6 +212,21 @@ fn lex(sql: &str, mysql: bool) -> Vec<Tok<'_>> {
                         i += 1;
                     }
                 }
+                // U&'…', U&"…" (Postgres unicode escapes): one piece, quotes doubled inside
+                if i == start + 1
+                    && c.eq_ignore_ascii_case(&b'u')
+                    && b.get(i) == Some(&b'&')
+                    && matches!(b.get(i + 1), Some(b'\'' | b'"'))
+                {
+                    let q = b[i + 1];
+                    i += 2;
+                    while i < b.len() && (b[i] != q || b.get(i + 1) == Some(&q)) {
+                        i += if b[i] == q { 2 } else { 1 };
+                    }
+                    i = (i + 1).min(b.len());
+                    out.push(Tok::Raw(&sql[start..i]));
+                    continue;
+                }
                 // E'…', N'…', X'…', B'…': the prefix belongs to its string
                 if i == start + 1 && b"EeNnXxBb".contains(&c) && b.get(i) == Some(&b'\'') {
                     i += 1;
@@ -436,6 +451,17 @@ mod tests {
         assert!(half.contains(".5,") && half.contains(".25"), "{half}"); // numbers stay whole
         assert!(!half.contains(". 5") && !half.contains(". 25"), "{half}");
         assert!(format_sql("select a=äb from t").contains("a = äb"));
+        let u = r#"select U&'d\0061t', U&"d!0061t" UESCAPE '!' from t"#;
+        assert!(
+            format_sql(u).contains(r#"U&'d\0061t',"#),
+            "{}",
+            format_sql(u)
+        );
+        assert!(
+            format_sql(u).contains(r#"U&"d!0061t""#),
+            "{}",
+            format_sql(u)
+        );
         let lit = r"'a\'b, from c'";
         for lit in [lit, r"N'a\'b, from c'"] {
             assert!(super::format_sql_as(&format!("select {lit} from t"), true).contains(lit));

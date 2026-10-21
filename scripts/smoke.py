@@ -92,6 +92,8 @@ def main():
             before = len(call("get_state")["tabs"])
             call("open_table", {"connection": DB, "table": "usres"}, ok=False)
             assert len(call("get_state")["tabs"]) == before  # no tab for a table that is not there
+            # a name that differs only by spaces is the same name
+            assert "exists" in call("add_connection", {"name": DB + " ", "driver": "sqlite", "database": db}, ok=False)
             # testing settings creates no database file
             typo = os.path.join(tmp, "typo.db")
             call("test_connection", {"name": "t", "driver": "sqlite", "database": typo}, ok=False)

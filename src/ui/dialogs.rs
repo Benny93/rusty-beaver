@@ -187,10 +187,12 @@ impl AppView {
     pub(super) fn update_connection(
         &mut self,
         id: u64,
-        cfg: ConnConfig,
+        mut cfg: ConnConfig,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        if cfg.name.trim().is_empty() {
+        // "demo " from an agent is demo, as the dialog has it
+        cfg.name = cfg.name.trim().to_string();
+        if cfg.name.is_empty() {
             return Err("name is required".into());
         }
         if self
@@ -344,10 +346,12 @@ impl AppView {
 
     pub(super) fn add_connection(
         &mut self,
-        cfg: ConnConfig,
+        mut cfg: ConnConfig,
         cx: &mut Context<Self>,
     ) -> Result<u64, String> {
-        if cfg.name.trim().is_empty() {
+        // "demo " from an agent is demo, as the dialog has it
+        cfg.name = cfg.name.trim().to_string();
+        if cfg.name.is_empty() {
             return Err("name is required".into());
         }
         if self
@@ -357,7 +361,6 @@ impl AppView {
         {
             return Err(format!("a connection named {:?} exists", cfg.name));
         }
-        let mut cfg = cfg;
         crate::vault::upgrade_legacy(&mut cfg);
         // a taken id would share (and on delete, erase) the other connection's password
         if cfg.id.is_empty() || self.conns.iter().any(|c| c.cfg.id == cfg.id) {

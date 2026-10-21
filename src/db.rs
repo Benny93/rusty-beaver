@@ -458,7 +458,9 @@ pub fn connect(c: &ConnConfig) -> Result<Session, String> {
                 .user(Some(&c.user))
                 .pass(Some(&c.password))
                 .db_name((!c.database.is_empty()).then_some(&c.database))
-                .tcp_connect_timeout(Some(Duration::from_secs(10)));
+                .tcp_connect_timeout(Some(Duration::from_secs(10)))
+                // UPDATE counts the rows it matched (like Postgres), not only those it changed
+                .additional_capabilities(mysql::consts::CapabilityFlags::CLIENT_FOUND_ROWS);
             let tls = match c.ssl {
                 Ssl::Disable => None,
                 // Encrypted, certificate not checked (like Postgres prefer/require).
@@ -649,11 +651,7 @@ impl Session {
         if !own_tx {
             let mut affected = 0;
             for s in statements {
-                affected += self
-                    .query(s)
-                    .map_err(|e| format!("{e}\n(in: {s})"))?
-                    .affected
-                    .unwrap_or(0);
+                affected += self.change(s).map_err(|e| format!("{e}\n(in: {s})"))?;
             }
             return Ok(QueryResult {
                 affected: Some(affected),
@@ -663,13 +661,24 @@ impl Session {
         self.apply(statements)
     }
 
+    /// One statement of a save: its row count. An UPDATE or DELETE of the grid finds its row
+    /// by key, so 0 rows means the row changed or went away meanwhile (or its key cannot be
+    /// matched, like a binary one): an error, not a silent no-op.
+    fn change(&mut self, s: &str) -> Result<u64, String> {
+        let n = self.query(s)?.affected.unwrap_or(0);
+        if n == 0 && (s.starts_with("UPDATE ") || s.starts_with("DELETE ")) {
+            return Err("the row was not found: changed or deleted meanwhile? Reload".into());
+        }
+        Ok(n)
+    }
+
     /// Run statements as one transaction: all of them or none.
     pub fn apply(&mut self, statements: &[String]) -> Result<QueryResult, String> {
         self.begin()?;
         let mut affected = 0;
         for s in statements {
-            match self.query(s) {
-                Ok(r) => affected += r.affected.unwrap_or(0),
+            match self.change(s) {
+                Ok(n) => affected += n,
                 Err(e) => {
                     let _ = self.query("ROLLBACK");
                     return Err(format!("{e}\n(rolled back: {s})"));
@@ -1851,6 +1860,13 @@ mod tests {
         );
         // A failing statement rolls everything back.
         assert!(s.apply(&["DELETE FROM t".into(), "nope".into()]).is_err());
+        assert_eq!(s.query("SELECT count(*) FROM t").unwrap().rows[0][0], "3");
+        // A row gone meanwhile is an error, and nothing else is kept.
+        let e = s.apply(&[
+            "INSERT INTO t(name) VALUES ('x')".into(),
+            "UPDATE t SET n = 1 WHERE id = 99".into(),
+        ]);
+        assert!(e.unwrap_err().contains("not found"));
         assert_eq!(s.query("SELECT count(*) FROM t").unwrap().rows[0][0], "3");
         // No primary key: updates are refused, inserts are fine.
         assert!(

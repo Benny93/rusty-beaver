@@ -74,6 +74,12 @@ fn append_to(p: &std::path::Path, e: &Entry) {
     {
         let _ = writeln!(f, "{}", serde_json::to_string(e).unwrap());
     }
+    // trimmed on start, and in a long run (an agent) once it gets big
+    // ponytail: 500 huge scripts stay over 2 MB and are re-read per append; cap entry size
+    // if that shows up
+    if std::fs::metadata(p).is_ok_and(|m| m.len() > 2_000_000) {
+        load_from(p);
+    }
 }
 
 pub fn now() -> u64 {

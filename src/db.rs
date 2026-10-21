@@ -1706,7 +1706,13 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
 
 /// Parse RFC 4180 CSV (quoted fields, "" escapes, CRLF or LF); blank lines are skipped, a
 /// line holding just "" is a row with one empty field.
+/// The separator is the header's: `,`, else `;` (Excel in German and other locales) or tab.
 pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
+    let header = text.lines().next().unwrap_or_default();
+    let sep = [',', ';', '\t']
+        .into_iter()
+        .find(|&c| header.contains(c))
+        .unwrap_or(',');
     let mut rows = vec![];
     let (mut row, mut field) = (vec![], String::new());
     let mut chars = text.trim_start_matches('\u{feff}').chars().peekable();
@@ -1720,7 +1726,7 @@ pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
             (true, '"') => quoted = false,
             (true, c) => field.push(c),
             (false, '"') if field.is_empty() => (quoted, had_quote) = (true, true),
-            (false, ',') => row.push(std::mem::take(&mut field)),
+            (false, c) if c == sep => row.push(std::mem::take(&mut field)),
             (false, '\r') => {}
             (false, '\n') => {
                 row.push(std::mem::take(&mut field));
@@ -1877,6 +1883,7 @@ mod tests {
         };
         assert_eq!(parse_csv(&to_csv(&one)).len(), 4); // header + 3 rows, none lost
         assert_eq!(parse_csv("a\n\nb\n").len(), 2); // a blank line is still skipped
+        assert_eq!(parse_csv("id;name\n1;\"a;b\"\n")[1], ["1", "a;b"]); // German Excel
     }
 
     #[test]

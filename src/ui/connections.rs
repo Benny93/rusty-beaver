@@ -188,9 +188,42 @@ impl AppView {
         let Some(driver) = self.conn_ix(id).map(|i| self.conns[i].cfg.driver) else {
             return done(self, Err("connection is gone".into()), window, cx);
         };
-        let inserts = std::fs::read_to_string(&path)
-            .map_err(|e| format!("{}: {e}", path.display()))
-            .and_then(|text| db::csv_inserts(driver, &table, &text));
+        // Reading and parsing a big file takes a while: not on the UI thread.
+        let (t, p) = (table.clone(), path.clone());
+        let read = cx.background_spawn(async move {
+            std::fs::read(&p)
+                .map_err(|e| format!("{}: {e}", p.display()))
+                .map(|bytes| {
+                    String::from_utf8(bytes).unwrap_or_else(|e| {
+                        // ponytail: not UTF-8 is read as Latin-1 (Excel's Windows-1252 but for
+                        // € and a few others); add encoding_rs if those matter
+                        e.into_bytes().iter().map(|&b| b as char).collect()
+                    })
+                })
+                .and_then(|text| db::csv_inserts(driver, &t, &text))
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let inserts = read.await;
+            let _ = this.update_in(cx, |v, w, cx| {
+                v.import_rows(id, table, path, inserts, confirm, w, cx, done)
+            });
+        })
+        .detach();
+    }
+
+    /// `import_csv` once the file is read: the INSERTs, or why there are none.
+    #[allow(clippy::too_many_arguments)]
+    fn import_rows(
+        &mut self,
+        id: u64,
+        table: String,
+        path: std::path::PathBuf,
+        inserts: Result<Vec<String>, String>,
+        confirm: Option<bool>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        done: Done,
+    ) {
         let inserts = match inserts {
             Ok(v) => v,
             Err(e) => {
@@ -228,7 +261,7 @@ impl AppView {
                 let yes = answer.await == Ok(0);
                 let _ = this.update_in(cx, |v, w, cx| {
                     if yes {
-                        v.import_csv(id, table, path, Some(true), w, cx, done)
+                        v.import_rows(id, table, path, Ok(inserts), Some(true), w, cx, done)
                     } else {
                         done(v, Err("cancelled".into()), w, cx)
                     }

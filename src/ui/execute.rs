@@ -593,9 +593,21 @@ impl AppView {
         path: &std::path::Path,
         cx: &mut Context<Self>,
     ) -> Result<String, String> {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("csv");
-        let (text, rows) = self.export_text(ext, cx)?;
-        std::fs::write(path, text).map_err(|e| e.to_string())?;
+        if !path.is_absolute() {
+            // relative to the app's working directory, which is / when started from Finder
+            return Err(format!("{}: give an absolute path", path.display()));
+        }
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("csv")
+            .to_ascii_lowercase();
+        if !EXPORT_FORMATS.iter().any(|f| f.0 == ext) && ext != "markdown" {
+            let known: Vec<&str> = EXPORT_FORMATS.iter().map(|f| f.0).collect();
+            return Err(format!("{ext:?} is no export format: {}", known.join(", ")));
+        }
+        let (text, rows) = self.export_text(&ext, cx)?;
+        db::write_atomic(path, text).map_err(|e| format!("{}: {e}", path.display()))?;
         // A table tab holds one page: say so when the table has more rows.
         let total = self
             .tabs

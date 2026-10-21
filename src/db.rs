@@ -711,14 +711,18 @@ impl Session {
             })
             .collect();
         if pg {
-            // the key's own column order: PRIMARY KEY (b, a) is another index than (a, b)
-            let pk = self.query(&format!(
-                "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE contype = 'p' \
-                 AND conrelid = (quote_ident({s}) || '.' || quote_ident({t}))::regclass",
+            // the constraints as Postgres defines them: the key first (in its own column order,
+            // PRIMARY KEY (b, a) is another index than (a, b)), then UNIQUE, CHECK, FOREIGN KEY
+            // and EXCLUDE (NOT NULL is on the columns)
+            let defs = self.query(&format!(
+                "SELECT 'CONSTRAINT ' || quote_ident(conname) || ' ' || pg_get_constraintdef(oid) \
+                 FROM pg_constraint WHERE contype IN ('p', 'u', 'c', 'f', 'x') \
+                 AND conrelid = (quote_ident({s}) || '.' || quote_ident({t}))::regclass \
+                 ORDER BY contype <> 'p', conname",
                 s = driver.literal(schema),
                 t = driver.literal(name)
             ))?;
-            if let Some(def) = pk.rows.first().and_then(|r| r[0].as_deref()) {
+            for def in defs.rows.iter().filter_map(|r| r[0].as_deref()) {
                 lines.push(format!("    {def}"));
             }
         } else {

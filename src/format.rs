@@ -243,6 +243,7 @@ fn lex(sql: &str, mysql: bool) -> Vec<Tok<'_>> {
                         || b[i] == b'$' && crate::db::dollar_quote_end(sql, i).is_some()
                 };
                 while i < b.len()
+                    && b[i] < 0x80
                     && !b[i].is_ascii_alphanumeric()
                     && !b[i].is_ascii_whitespace()
                     && !b"'\"`,();_".contains(&b[i])
@@ -432,6 +433,7 @@ mod tests {
         let half = format_sql("select .5, a*.25 from t");
         assert!(half.contains(".5,") && half.contains(".25"), "{half}"); // numbers stay whole
         assert!(!half.contains(". 5") && !half.contains(". 25"), "{half}");
+        assert!(format_sql("select a=äb from t").contains("a = äb"));
         let lit = r"'a\'b, from c'";
         assert!(super::format_sql_as(&format!("select {lit} from t"), true).contains(lit));
         let my = format_sql("select a # note\n+ 1 from t");

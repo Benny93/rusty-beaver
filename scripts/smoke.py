@@ -122,6 +122,17 @@ def main():
             ddl = call("set_table_view", {"view": "ddl"})["ddl"]
             assert ddl.startswith("CREATE TABLE lodges"), ddl
             call("set_table_view", {"view": "data"})
+            # a Load more that fails does not make the next one fetch two pages
+            call("run_sql", {"connection": DB, "sql": "CREATE TABLE big AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000) SELECT i FROM n"})
+            assert call("open_table", {"connection": DB, "table": "big"})["row_count"] == 200
+            call("run_sql", {"connection": DB, "sql": "DROP TABLE big"})
+            big_tab = [t["index"] for t in call("get_state")["tabs"] if t["title"] == "big"][0]
+            call("select_tab", {"index": big_tab})
+            call("load_more", {}, ok=False)
+            call("run_sql", {"connection": DB, "sql": "CREATE TABLE big AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000) SELECT i FROM n"})
+            call("select_tab", {"index": big_tab})
+            more = call("load_more", {})["row_count"]
+            assert more == 400, more
 
         def transactions_and_production():
             call("set_auto_commit", {"connection": DB, "on": False})

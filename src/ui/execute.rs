@@ -631,6 +631,17 @@ impl AppView {
             );
         }
         t.limit += PAGE;
+        // a load that fails (or is refused) keeps the old page count: else the next one
+        // fetched two pages, and "Load more" hid while rows were left
+        let key = t.grid.entity_id();
+        let done: Done = Box::new(move |v, r, w, cx| {
+            if r.is_err()
+                && let Some(t) = v.tab_ix(key).and_then(|i| v.tabs.get_mut(i))
+            {
+                t.limit = t.limit.saturating_sub(PAGE).max(PAGE);
+            }
+            done(v, r, w, cx)
+        });
         self.reload_table(tab, window, cx, done);
     }
 

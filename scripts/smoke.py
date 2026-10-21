@@ -252,6 +252,13 @@ def main():
             call("run_sql", {"connection": DB, "sql": "INSERT INTO lodges(name, river) VALUES ('Tx Lodge', 'Main'); COMMIT"})
             assert not [c for c in call("get_state")["connections"] if c["name"] == DB][0]["in_transaction"]
             assert q("SELECT count(*) FROM lodges WHERE name = 'Tx Lodge'") == [(1,)]
+            # ROLLBACK TRANSACTION TO a savepoint keeps the transaction open
+            call("run_sql", {"connection": DB, "sql": "INSERT INTO lodges(name, river) VALUES ('Sp Lodge', 'Main')"})
+            call("run_sql", {"connection": DB, "sql": "SAVEPOINT s"})
+            call("run_sql", {"connection": DB, "sql": "ROLLBACK TRANSACTION TO s"})
+            assert [c for c in call("get_state")["connections"] if c["name"] == DB][0]["in_transaction"]
+            call("rollback", {"connection": DB})
+            assert q("SELECT count(*) FROM lodges WHERE name = 'Sp Lodge'") == [(0,)]
             call("set_auto_commit", {"connection": DB, "on": True})
             call("edit_connection", {"connection": DB, "production": True})
             assert "confirm" in call("run_sql", {"connection": DB, "sql": "DELETE FROM missions WHERE id = 6"}, ok=False)

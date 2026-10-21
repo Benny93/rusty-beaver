@@ -1752,8 +1752,12 @@ pub fn statement_heads(sql: &str, mysql: bool) -> Vec<(String, String)> {
                 while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
                     i += 1;
                 }
-                if cur.len() < 2 {
-                    cur.push(sql[start..i].to_ascii_uppercase());
+                let w = sql[start..i].to_ascii_uppercase();
+                // ROLLBACK TRANSACTION TO s is ROLLBACK TO s: WORK and TRANSACTION say nothing
+                let noise = matches!(cur.as_slice(), [c] if c == "ROLLBACK" || c == "COMMIT")
+                    && (w == "WORK" || w == "TRANSACTION");
+                if cur.len() < 2 && !noise {
+                    cur.push(w);
                 }
                 continue;
             }
@@ -3053,6 +3057,13 @@ mod tests {
             ["CREATE"]
         );
         assert_eq!(first("SELECT 1 -- x\n"), ["SELECT"]);
+        assert_eq!(
+            statement_heads("ROLLBACK TRANSACTION TO s; COMMIT WORK", false),
+            [
+                ("ROLLBACK".into(), "TO".into()),
+                ("COMMIT".into(), String::new())
+            ]
+        );
         let m = "UPDATE t SET a = a--1; SELECT 2";
         assert_eq!(&m[statement_at(m, 0, true)], "UPDATE t SET a = a--1;");
     }

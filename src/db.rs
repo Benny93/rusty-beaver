@@ -891,6 +891,15 @@ fn pg_capped(sql: &str) -> Option<String> {
     let body = sql.trim_end().trim_end_matches(';');
     // "SELECT …; -- note": the ; inside would be a syntax error in the subquery
     let reads = reads && !body.contains(';');
+    // FOR SHARE / KEY SHARE locks every row it reads: capped it would lock only the first ones
+    let words: Vec<String> = body
+        .split_whitespace()
+        .map(str::to_ascii_uppercase)
+        .collect();
+    let locks = words
+        .windows(2)
+        .any(|w| w[0] == "FOR" && matches!(w[1].as_str(), "SHARE" | "KEY" | "NO" | "UPDATE"));
+    let reads = reads && !locks;
     // newlines: a trailing -- comment must not swallow the closing parenthesis
     reads.then(|| {
         format!(
@@ -2584,6 +2593,8 @@ mod tests {
             "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d",
             "SHOW search_path",
             "SELECT 1; -- note",
+            "SELECT * FROM jobs WHERE state = 'new' FOR UPDATE",
+            "SELECT * FROM t FOR SHARE",
         ] {
             assert_eq!(pg_capped(not), None, "{not}");
         }

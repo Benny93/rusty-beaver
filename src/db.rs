@@ -727,6 +727,13 @@ impl Session {
         if n == 0 && (s.starts_with("UPDATE ") || s.starts_with("DELETE ")) {
             return Err("the row was not found: changed or deleted meanwhile? Reload".into());
         }
+        // one grid row is one row: a key that matches more (NULL twice in a SQLite key)
+        // would change all of them
+        if n > 1 && (s.starts_with("UPDATE ") || s.starts_with("DELETE ")) {
+            return Err(format!(
+                "the key matches {n} rows, not one: change them with SQL"
+            ));
+        }
         Ok(n)
     }
 
@@ -2249,6 +2256,31 @@ mod tests {
                 vec![Some("NULL".into())],
                 vec![None]
             ]
+        );
+    }
+
+    #[test]
+    fn a_grid_save_changes_one_row_per_statement() {
+        // SQLite lets a TEXT primary key hold NULL twice: WHERE a IS NULL matches both
+        let mut s = Session::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+        s.query_all(
+            "CREATE TABLE u(a TEXT PRIMARY KEY, b); INSERT INTO u VALUES (NULL, 1), (NULL, 2);",
+        )
+        .unwrap();
+        let r = s.query("SELECT * FROM u").unwrap();
+        let mut c = Changes::default();
+        c.cells.insert((0, 1), Some("9".into()));
+        let sql = c
+            .to_sql(Driver::Sqlite, "u", &r.columns, &r.rows, &[0])
+            .unwrap();
+        assert!(s.apply(&sql).is_err());
+        assert_eq!(
+            text(
+                &s.query("SELECT count(*) FROM u WHERE b = '9'")
+                    .unwrap()
+                    .rows[0][0]
+            ),
+            "0"
         );
     }
 

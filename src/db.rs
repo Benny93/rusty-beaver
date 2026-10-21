@@ -115,7 +115,8 @@ impl Driver {
     fn ddl_sql(self, table: &str) -> Option<String> {
         match self {
             Driver::Sqlite => Some(format!(
-                "SELECT sql FROM sqlite_master WHERE name = {}",
+                // (a trigger or index may have the same name)
+                "SELECT sql FROM sqlite_master WHERE type IN ('table', 'view') AND name = {}",
                 self.literal(table)
             )),
             Driver::Mysql => Some(format!("SHOW CREATE TABLE {}", self.quote(table))),
@@ -2467,6 +2468,13 @@ mod tests {
         );
         s.query("DROP TABLE sqlite3_cache; DROP TABLE SQLiteLog")
             .unwrap();
+        // a trigger of the same name is not the table's DDL
+        s.query("CREATE TABLE x(a); CREATE TRIGGER tt AFTER INSERT ON x BEGIN SELECT 1; END; CREATE TABLE tt(id INTEGER PRIMARY KEY)").unwrap();
+        assert!(
+            s.ddl("tt").unwrap().starts_with("CREATE TABLE"),
+            "{}",
+            s.ddl("tt").unwrap()
+        );
         // C is c in SQLite: its references too
         assert_eq!(
             texts(&s.columns("C").unwrap().rows)[1][3..5],

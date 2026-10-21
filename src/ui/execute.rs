@@ -233,7 +233,10 @@ impl AppView {
         let one_statement = heads.len() <= 1;
         // COMMIT / ROLLBACK end the transaction (ROLLBACK TO SAVEPOINT does not); END only as
         // the first statement, as it also closes trigger and BEGIN ATOMIC bodies
-        let ends = |(w1, w2): &(String, String)| w1 == "COMMIT" || w1 == "ROLLBACK" && w2 != "TO";
+        // (ABORT: Postgres' ROLLBACK)
+        let ends = |(w1, w2): &(String, String)| {
+            w1 == "COMMIT" || (w1 == "ROLLBACK" || w1 == "ABORT") && w2 != "TO"
+        };
         let first_ends = heads.first().is_some_and(|h| ends(h) || h.0 == "END");
         // "UPDATE …; COMMIT" ends it too, once the script ran through
         // ponytail: statements after the COMMIT run outside a transaction, as typed

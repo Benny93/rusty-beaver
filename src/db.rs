@@ -1682,8 +1682,20 @@ fn quote_end(b: &[u8], i: usize, mysql: bool) -> usize {
 
 fn writes(sql: &str, mysql: bool) -> bool {
     const WRITES: &[&str] = &[
-        "INSERT", "UPDATE", "DELETE", "MERGE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT",
-        "REVOKE", "RENAME", "INTO",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "MERGE",
+        "DROP",
+        "ALTER",
+        "TRUNCATE",
+        "CREATE",
+        "GRANT",
+        "REVOKE",
+        "RENAME",
+        "INTO",
+        // Postgres' SET as a function: set_config('default_transaction_read_only', 'off', …)
+        "SET_CONFIG",
     ];
     // Only as a statement's first word: "comment" and "lock" are column names too.
     const LEADING: &[&str] = &[
@@ -1755,6 +1767,8 @@ fn writes(sql: &str, mysql: bool) -> bool {
                 if is(WRITES)
                     || first && is(LEADING)
                     || set && is(UNLOCKS)
+                    // PRAGMA query_only(0) is PRAGMA query_only = 0 (reading it has no "(")
+                    || pragma && is(UNLOCKS) && sql[i..].trim_start().starts_with('(')
                     || word.eq_ignore_ascii_case("WRITE") && prev.eq_ignore_ascii_case("READ")
                 {
                     return true;
@@ -2987,6 +3001,13 @@ mod tests {
         assert!(is_write("SELECT 1--1; DROP TABLE t", true));
         // …while Postgres and SQLite read --x as a comment: no write, no read-only refusal
         assert!(!is_write("SELECT * FROM t --delete later", false));
+        // read-only switched off in another form: PRAGMA x(0), set_config(…)
+        assert!(is_write_any("PRAGMA query_only(0)"));
+        assert!(!is_write_any("PRAGMA table_info(t)"));
+        assert!(is_write(
+            "SELECT set_config('default_transaction_read_only', 'off', false)",
+            false
+        ));
         // a word in a later string stays text after an escaped quote or a closing backslash
         assert!(!is_write(
             r"SELECT * FROM t WHERE name = 'O\'Brien' AND op = 'delete'",

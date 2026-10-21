@@ -936,12 +936,18 @@ impl Session {
             .foreign_keys()
             .unwrap_or_default()
             .into_iter()
-            .filter(|f| f.table == table)
+            // SQLite names ignore case: C is the table c (Postgres and MySQL may tell them apart)
+            .filter(|f| {
+                f.table == table || driver == Driver::Sqlite && f.table.eq_ignore_ascii_case(table)
+            })
             .collect();
         for row in &mut r.rows {
             let refs = fks
                 .iter()
-                .filter(|f| f.column == text(&row[0]))
+                .filter(|f| {
+                    f.column == text(&row[0])
+                        || driver == Driver::Sqlite && f.column.eq_ignore_ascii_case(text(&row[0]))
+                })
                 .map(|f| {
                     if f.ref_column.is_empty() {
                         f.ref_table.clone()
@@ -2450,6 +2456,11 @@ mod tests {
         assert_eq!(texts(&fk.rows)[1][3..5], ["FK", "t.id"]);
         assert_eq!(texts(&fk.rows)[2][3..5], ["FK", "t.id"]); // bare REFERENCES t: its primary key
         assert_eq!(s.foreign_keys().unwrap().len(), 2);
+        // C is c in SQLite: its references too
+        assert_eq!(
+            texts(&s.columns("C").unwrap().rows)[1][3..5],
+            ["FK", "t.id"]
+        );
         // REFERENCES T: the table as it is named (the ER diagram matches names exactly)
         s.query("CREATE TABLE d(t_id INT REFERENCES T(id))")
             .unwrap();

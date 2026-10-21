@@ -176,6 +176,12 @@ def main():
             call("run_sql", {"connection": DB, "sql": "DELETE FROM missions"})
             call("rollback", {"connection": DB})
             assert q("SELECT count(*) FROM missions") == [(6,)]
+            # a write that fails is not counted in the open transaction
+            call("run_sql", {"connection": DB, "sql": "INSERT INTO lodges(id, name, river) VALUES (900, 'Tx Count', 'Main')"})
+            call("run_sql", {"connection": DB, "sql": "INSERT INTO lodges(id, name, river) VALUES (900, 'Tx Count', 'Main')"}, ok=False)
+            conn = [c for c in call("get_state")["connections"] if c["name"] == DB][0]
+            assert conn["statements_in_transaction"] == 1, conn
+            call("rollback", {"connection": DB})
             # a session setting opens no transaction (SQLite ignores foreign_keys inside one)
             call("run_sql", {"connection": DB, "sql": "PRAGMA foreign_keys = ON"})
             assert not [c for c in call("get_state")["connections"] if c["name"] == DB][0]["in_transaction"]

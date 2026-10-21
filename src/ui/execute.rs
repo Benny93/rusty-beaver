@@ -266,6 +266,18 @@ impl AppView {
             window,
             cx,
             Box::new(move |v, r, window, cx| {
+                // a write that failed is no statement of the transaction (it stays open)
+                if manual
+                    && write
+                    && !mysql_ddl
+                    && !setting
+                    && !first_ends
+                    && r.is_err()
+                    && let Some(i) = v.conn_ix(conn)
+                {
+                    let c = &mut v.conns[i];
+                    c.tx_statements = c.tx_statements.saturating_sub(1);
+                }
                 // a script that failed before its COMMIT leaves the transaction open
                 if manual
                     && later_ends

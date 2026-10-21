@@ -7,7 +7,7 @@ const FLOOR = 0, WALL = 1, CRATE = 2;
 
 // Deterministic random numbers, so a level can be replayed and tested.
 function rng(seed) {
-  let s = seed >>> 0 || 1;
+  let s = seed >>> 0; // the LCG runs from 0 too (c is odd): seed 0 is not seed 1
   return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
 }
 

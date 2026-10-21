@@ -23,6 +23,8 @@ for (let level = 1; level <= 8; level++) {
 }
 // Same seed, same level.
 assert.deepEqual(R.makeLevel(3, R.rng(42)), R.makeLevel(3, R.rng(42)));
+// …and another seed, another level (0 is a seed like any other).
+assert.notDeepEqual(R.makeLevel(1, R.rng(0)), R.makeLevel(1, R.rng(1)));
 
 // Blast: stops at walls, takes the first crate and stops there.
 const { WALL: X, CRATE: C, FLOOR: o } = R;

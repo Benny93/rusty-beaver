@@ -697,6 +697,24 @@ impl Session {
                 return Ok(format!("CREATE {kind} {t} AS\n{def};"));
             }
         }
+        // …a partition is one of its table (columns and keys come from there)…
+        if driver == Driver::Postgres {
+            let sql = format!(
+                "SELECT (SELECT quote_ident(pn.nspname) || '.' || quote_ident(pc.relname) FROM pg_inherits i \
+                 JOIN pg_class pc ON pc.oid = i.inhparent JOIN pg_namespace pn ON pn.oid = pc.relnamespace \
+                 WHERE i.inhrelid = c.oid), pg_get_expr(c.relpartbound, c.oid) FROM pg_class c \
+                 WHERE c.oid = to_regclass({}) AND c.relispartition",
+                driver.literal(&driver.table_ref(table))
+            );
+            if let Some(row) = self.query(&sql)?.rows.first() {
+                return Ok(format!(
+                    "CREATE TABLE {} PARTITION OF {}\n    {};",
+                    driver.table_ref(table),
+                    text(&row[0]),
+                    text(&row[1])
+                ));
+            }
+        }
         // …a table is rebuilt from its columns, with their defaults and identity (without
         // them a serial id would be a plain NOT NULL integer)
         let cols = self.columns(table)?;
@@ -760,8 +778,22 @@ impl Session {
                 lines.push(format!("    PRIMARY KEY ({})", pk.join(", ")));
             }
         }
+        // a partitioned table: PARTITION BY RANGE (id), else it would be a plain one
+        let partition_by = if pg {
+            self.query(&format!(
+                "SELECT pg_get_partkeydef(to_regclass({}))",
+                driver.literal(&driver.table_ref(table))
+            ))?
+            .rows
+            .first()
+            .and_then(|r| r[0].clone())
+            .map(|k| format!(" PARTITION BY {k}"))
+            .unwrap_or_default()
+        } else {
+            String::new()
+        };
         Ok(format!(
-            "CREATE TABLE {} (\n{}\n);",
+            "CREATE TABLE {} (\n{}\n){partition_by};",
             driver.table_ref(table),
             lines.join(",\n")
         ))

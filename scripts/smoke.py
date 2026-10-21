@@ -73,6 +73,11 @@ def main():
             assert len(r["results"]) == 2 and r["rows"] == [["2"]]
             assert call("get_results", {"index": 0})["rows"] == [["1"]]
             assert "no such column" in call("run_sql", {"sql": "SELECT nope"}, ok=False)
+            call("run_sql", {"sql": "SELECT NULL AS n, 'NULL' AS t"})  # SQL NULL vs the text
+            assert call("show_value", {"row": 0, "column": "n"})["value"] is None
+            assert call("show_value", {"row": 0, "column": "t"})["value"] == "NULL"
+            assert call("record_view", {"on": True, "row": 0})["record"] == {"n": None, "t": "NULL"}
+            call("record_view", {"on": False})
             call("new_sql_editor", {"connection": DB})
             assert "empty" in call("execute_editor", {}, ok=False)  # refused, not "started"
 

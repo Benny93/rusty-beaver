@@ -434,7 +434,7 @@ impl AppView {
                                 g.r.columns
                                     .iter()
                                     .enumerate()
-                                    .map(|(c, n)| (n.clone(), json!(g.value(id, c))))
+                                    .map(|(c, n)| (n.clone(), json!(g.cell(id, c))))
                                     .collect()
                             })
                             .unwrap_or_default();
@@ -578,7 +578,7 @@ impl AppView {
                     t.grid.update(cx, |g, cx| g.set_selected_cell(row, col, cx));
                     let g = t.grid.read(cx).delegate();
                     let stats: serde_json::Map<String, Value> = crate::grid::column_stats(g, col).into_iter().map(|(k, v)| (k.to_string(), json!(v))).collect();
-                    json!({ "row": row, "column": g.r.columns[col], "value": g.row_id(row).map(|id| g.value(id, col)), "column_stats": stats })
+                    json!({ "row": row, "column": g.r.columns[col], "value": g.row_id(row).and_then(|id| g.cell(id, col)), "column_stats": stats })
                 });
                 now(self, r, window, cx, done)
             }

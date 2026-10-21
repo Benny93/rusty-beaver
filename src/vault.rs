@@ -192,6 +192,13 @@ fn token(c: &ConnConfig, addr: &str, open: &dyn Fn(&str), refused: &str) -> Resu
             return Ok(t);
         }
     }
+    // one sign-in at a time (they share the callback port); one that waited may find the
+    // token another connection just got
+    static SIGN_IN: Mutex<()> = Mutex::new(());
+    let _one = SIGN_IN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(t) = cached(addr).filter(|t| t != refused && token_valid(addr, t)) {
+        return Ok(t);
+    }
     let mount = if c.vault_mount.trim().is_empty() {
         "oidc"
     } else {
@@ -734,6 +741,29 @@ mod tests {
         let e = resolve(&denied, &browser).unwrap_err();
         assert!(e.contains("permission denied"), "{e}");
         remember(&c.vault_addr, Some("s.fake".into()));
+        // two connections signing in at once: one sign-in, not two on the callback port
+        remember(&c.vault_addr, None);
+        let both: Vec<_> = (0..2)
+            .map(|_| {
+                let c = ConnConfig {
+                    vault_field: String::new(),
+                    ..c.clone()
+                };
+                std::thread::spawn(move || {
+                    resolve(&c, &|u: &str| {
+                        let u = u.to_string();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(Duration::from_millis(300));
+                            let _ = ureq::get(&u).call();
+                        });
+                    })
+                })
+            })
+            .collect();
+        for h in both {
+            let r = h.join().unwrap();
+            assert!(r.is_ok(), "{r:?}");
+        }
         // a body that is no JSON: its text, not "no details"
         let proxy = ConnConfig {
             vault_path: "kv/proxy".into(),

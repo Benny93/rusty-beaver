@@ -397,10 +397,13 @@ impl AppView {
                             g.refresh(cx);
                         });
                         // rows as the grid shows them: an active search applies to them too
-                        let shown = t.grid.read(cx).delegate().rows(true);
-                        let s = result_json(&shown, max_rows);
-                        (j["rows"], j["row_count"], j["truncated"]) =
-                            (s["rows"].clone(), s["row_count"].clone(), s["truncated"].clone());
+                        // (copied only then: every run would copy up to 10,000 rows again)
+                        let g = t.grid.read(cx).delegate();
+                        if !g.search.is_empty() {
+                            let s = result_json(&g.rows(true), max_rows);
+                            (j["rows"], j["row_count"], j["truncated"]) =
+                                (s["rows"].clone(), s["row_count"].clone(), s["truncated"].clone());
+                        }
                         v.status = msg.clone();
                         t.message = Some(Ok(msg));
                         Ok(j)

@@ -254,6 +254,30 @@ pub fn column_stats(g: &Grid, col: usize) -> Vec<(&'static str, String)> {
     out
 }
 
+/// Values as an SQL IN list: numbers bare where the column holds numbers (`ty`, its declared
+/// type; unknown or none: whatever looks like a number), else quoted ('007' stays '007').
+pub fn in_list(vals: &[String], driver: crate::db::Driver, ty: Option<&str>) -> String {
+    let numeric = ty.filter(|t| !t.trim().is_empty()).is_none_or(|t| {
+        let t = t.to_ascii_lowercase();
+        [
+            "int", "real", "num", "dec", "float", "double", "serial", "money",
+        ]
+        .iter()
+        .any(|n| t.contains(n))
+    });
+    let vals: Vec<String> = vals
+        .iter()
+        .map(|v| {
+            if numeric && num(v).is_some() {
+                v.clone()
+            } else {
+                driver.literal(v)
+            }
+        })
+        .collect();
+    format!("({})", vals.join(", "))
+}
+
 /// A value as a number; text like "NaN" or "inf" is no number here.
 pub fn num(v: &str) -> Option<f64> {
     v.parse::<f64>().ok().filter(|x| x.is_finite())
@@ -418,6 +442,27 @@ mod tests {
         g.set_search("");
         assert_eq!(g.order.len(), 3);
         assert!(g.order.contains(&1));
+    }
+
+    #[test]
+    fn in_list_quotes_by_column_type() {
+        use crate::db::Driver;
+        let v = |s: &[&str]| s.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+        // zip codes in a text column stay text: 007 would be 7
+        assert_eq!(
+            super::in_list(&v(&["007", "a"]), Driver::Postgres, Some("text")),
+            "('007', 'a')"
+        );
+        assert_eq!(
+            super::in_list(&v(&["1", "2"]), Driver::Postgres, Some("integer")),
+            "(1, 2)"
+        );
+        // no type known (a query result, an untyped SQLite column): numbers bare
+        assert_eq!(
+            super::in_list(&v(&["1", "x"]), Driver::Sqlite, None),
+            "(1, 'x')"
+        );
+        assert_eq!(super::in_list(&v(&["1"]), Driver::Sqlite, Some("")), "(1)");
     }
 
     #[test]

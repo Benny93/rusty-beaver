@@ -112,15 +112,18 @@ impl AppView {
                     .filter(|id| !g.changes.deleted.contains(id)) // as shown()
                     .filter_map(|&id| g.cell(id, col))
                     .filter(|v| seen.insert(v.clone()))
-                    .map(|v| {
-                        if crate::grid::num(&v).is_some() {
-                            v
-                        } else {
-                            driver.literal(&v)
-                        }
-                    })
                     .collect();
-                let text = format!("({})", vals.join(", "));
+                // the declared type, for a table tab (its Columns view)
+                let ty = t
+                    .columns
+                    .read(cx)
+                    .delegate()
+                    .r
+                    .rows
+                    .iter()
+                    .find(|c| db::text(&c[0]) == g.r.columns[col])
+                    .map(|c| db::text(&c[1]).to_string());
+                let text = crate::grid::in_list(&vals, driver, ty.as_deref());
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
                 Ok(Some(format!(
                     "Copied {} as an IN list",

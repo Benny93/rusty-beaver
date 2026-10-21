@@ -375,6 +375,11 @@ impl AppView {
                             g.delegate_mut().set(res);
                             g.refresh(cx);
                         });
+                        // rows as the grid shows them: an active search applies to them too
+                        let shown = t.grid.read(cx).delegate().rows(true);
+                        let s = result_json(&shown, max_rows);
+                        (j["rows"], j["row_count"], j["truncated"]) =
+                            (s["rows"].clone(), s["row_count"].clone(), s["truncated"].clone());
                         v.status = msg.clone();
                         t.message = Some(Ok(msg));
                         Ok(j)
@@ -631,11 +636,12 @@ impl AppView {
             return Err("save or revert the pending changes first".into());
         }
         t.result_ix = i;
-        let j = result_json(&r, max_rows);
         t.grid.update(cx, |g, cx| {
             g.delegate_mut().set(r);
             g.refresh(cx);
         });
+        // the rows as the grid shows them (an active search applies to the new result)
+        let j = result_json(&t.grid.read(cx).delegate().rows(true), max_rows);
         cx.notify();
         Ok(j)
     }

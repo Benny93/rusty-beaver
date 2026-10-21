@@ -92,6 +92,9 @@ def main():
             r = call("run_sql", {"sql": "SELECT 1 AS a; SELECT 2 AS b;"})
             assert len(r["results"]) == 2 and r["rows"] == [["2"]]
             assert call("get_results", {"index": 0})["rows"] == [["1"]]
+            call("search_results", {"text": "2"})  # the rows as the grid shows them
+            assert call("get_results", {"index": 0})["rows"] == [], "search hides 1"
+            call("search_results", {"text": ""})
             assert "no such column" in call("run_sql", {"sql": "SELECT nope"}, ok=False)
             call("run_sql", {"sql": "SELECT NULL AS n, 'NULL' AS t"})  # SQL NULL vs the text
             assert call("show_value", {"row": 0, "column": "n"})["value"] is None

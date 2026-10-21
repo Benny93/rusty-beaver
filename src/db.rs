@@ -2106,7 +2106,7 @@ fn csv_fields(text: &str) -> Vec<Vec<(String, bool)>> {
     let header = text
         .trim_start_matches('\u{feff}')
         .lines()
-        .next()
+        .find(|l| !l.trim().is_empty()) // blank lines before it are skipped like any other
         .unwrap_or_default();
     let unquoted: String = header.split('"').step_by(2).collect();
     // a tie goes to the last: tab (a TSV header can hold commas, as in round(x, 2)), then comma
@@ -2343,6 +2343,8 @@ mod tests {
         assert_eq!(parse_csv("id;name\n1;\"a;b\"\n")[1], ["1", "a;b"]); // German Excel
         // our own TSV export of round(x, 2): one tab, one comma in the header
         assert_eq!(parse_csv("a\tround(x, 2)\n1\t2\n")[0], ["a", "round(x, 2)"]);
+        // the header is the first line with something on it
+        assert_eq!(parse_csv("\r\na;b\r\n1;2\r\n")[0], ["a", "b"]);
         assert_eq!(
             parse_csv("Nachname, Vorname;Ort;PLZ\nA, B;C;1\n")[1],
             ["A, B", "C", "1"]

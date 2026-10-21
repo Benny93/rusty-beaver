@@ -2133,13 +2133,14 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
 pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
     csv_fields(text)
         .into_iter()
-        .map(|r| r.into_iter().map(|(v, _)| v).collect())
+        .map(|(_, r)| r.into_iter().map(|(v, _)| v).collect())
         .collect()
 }
 
 /// `parse_csv`, with each field's text and whether it was quoted ("" is an empty text, an
 /// empty field is NULL).
-fn csv_fields(text: &str) -> Vec<Vec<(String, bool)>> {
+/// Each record comes with the line it starts on.
+fn csv_fields(text: &str) -> Vec<(usize, Vec<(String, bool)>)> {
     let header = text
         .trim_start_matches('\u{feff}')
         .lines()
@@ -2155,7 +2156,9 @@ fn csv_fields(text: &str) -> Vec<Vec<(String, bool)>> {
     let (mut row, mut field) = (vec![], String::new());
     let mut chars = text.trim_start_matches('\u{feff}').chars().peekable();
     let (mut quoted, mut had_quote, mut field_quoted) = (false, false, false);
+    let (mut line, mut start) = (1, 1);
     while let Some(c) = chars.next() {
+        line += usize::from(c == '\n');
         match (quoted, c) {
             (true, '"') if chars.peek() == Some(&'"') => {
                 field.push('"');
@@ -2177,17 +2180,18 @@ fn csv_fields(text: &str) -> Vec<Vec<(String, bool)>> {
                     std::mem::take(&mut field_quoted),
                 ));
                 if had_quote || !(row.len() == 1 && row[0].0.is_empty()) {
-                    rows.push(std::mem::take(&mut row));
+                    rows.push((start, std::mem::take(&mut row)));
                 }
                 row.clear();
                 had_quote = false;
+                start = line;
             }
             (false, c) => field.push(c),
         }
     }
     if had_quote || !field.is_empty() || !row.is_empty() {
         row.push((field, field_quoted));
-        rows.push(row);
+        rows.push((start, row));
     }
     rows
 }
@@ -2215,39 +2219,38 @@ pub fn csv_text(bytes: Vec<u8>) -> Result<String, String> {
 /// NULL become SQL NULL; a quoted "NULL" is text.
 pub fn csv_inserts(driver: Driver, table: &str, text: &str) -> Result<Vec<String>, String> {
     let mut rows = csv_fields(text).into_iter();
-    let header = rows.next().ok_or("the file is empty")?;
+    let (_, header) = rows.next().ok_or("the file is empty")?;
     let cols = header
         .iter()
         .map(|(h, _)| driver.quote(h.trim()))
         .collect::<Vec<_>>()
         .join(", ");
-    rows.enumerate()
-        .map(|(i, r)| {
-            if r.len() != header.len() {
-                return Err(format!(
-                    "line {}: {} fields, the header has {}",
-                    i + 2,
-                    r.len(),
-                    header.len()
-                ));
-            }
-            let vals = r
-                .iter()
-                .map(|(v, quoted)| {
-                    if v.is_empty() || !quoted && v == "NULL" {
-                        "NULL".into()
-                    } else {
-                        driver.literal(v)
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            Ok(format!(
-                "INSERT INTO {} ({cols}) VALUES ({vals});",
-                driver.table_ref(table)
-            ))
-        })
-        .collect()
+    rows.map(|(line, r)| {
+        if r.len() != header.len() {
+            return Err(format!(
+                "line {}: {} fields, the header has {}",
+                line,
+                r.len(),
+                header.len()
+            ));
+        }
+        let vals = r
+            .iter()
+            .map(|(v, quoted)| {
+                if v.is_empty() || !quoted && v == "NULL" {
+                    "NULL".into()
+                } else {
+                    driver.literal(v)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(format!(
+            "INSERT INTO {} ({cols}) VALUES ({vals});",
+            driver.table_ref(table)
+        ))
+    })
+    .collect()
 }
 
 /// RFC 4180 CSV.
@@ -2395,6 +2398,9 @@ mod tests {
         assert_eq!(parse_csv("a\tround(x, 2)\n1\t2\n")[0], ["a", "round(x, 2)"]);
         // the header is the first line with something on it
         assert_eq!(parse_csv("\r\na;b\r\n1;2\r\n")[0], ["a", "b"]);
+        // the line a bad row is on, past blank lines and quoted line breaks
+        let e = csv_inserts(Driver::Sqlite, "t", "a,b\n\n\"x\ny\",1\n1,2,3\n").unwrap_err();
+        assert!(e.starts_with("line 5:"), "{e}");
         assert_eq!(
             parse_csv("Nachname, Vorname;Ort;PLZ\nA, B;C;1\n")[1],
             ["A, B", "C", "1"]

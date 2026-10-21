@@ -136,15 +136,19 @@ fn call(
 }
 
 fn vault_errors(v: &Value) -> String {
-    v["errors"]
-        .as_array()
-        .map(|e| {
-            e.iter()
-                .filter_map(|x| x.as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
-        })
-        .filter(|s| !s.is_empty())
+    let list = |k: &str| {
+        v[k].as_array()
+            .map(|e| {
+                e.iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            })
+            .filter(|s| !s.is_empty())
+    };
+    // a KV v2 path without data/ answers 404 with no errors, only a warning saying so
+    list("errors")
+        .or_else(|| list("warnings"))
         .unwrap_or_else(|| "no details".into())
 }
 
@@ -576,6 +580,8 @@ mod tests {
                     (403, r#"{"errors":["permission denied"]}"#.to_string(), None)
                 } else if target.starts_with("/v1/auth/token/lookup-self") {
                     (200, "{}".to_string(), None)
+                } else if target.starts_with("/v1/kv/team") {
+                    (404, r#"{"errors":[],"warnings":["Invalid path for a versioned K/V secrets engine. See the API docs for the appropriate API endpoints to use. If using the Vault CLI, use 'vault kv get' for this operation."]}"#.to_string(), None)
                 } else if target.starts_with("/v1/kv/data/pin") {
                     (
                         200,
@@ -619,7 +625,10 @@ mod tests {
         let token = oidc_login(&addr, "oidc", "", 0, &browser).unwrap();
         assert_eq!(token, "s.fake");
         // a mount typed as /oidc/ is the mount oidc
-        assert_eq!(oidc_login(&addr, "/oidc/", "", 0, &browser).unwrap(), "s.fake");
+        assert_eq!(
+            oidc_login(&addr, "/oidc/", "", 0, &browser).unwrap(),
+            "s.fake"
+        );
 
         remember(&addr, Some(token));
         let c = ConnConfig {
@@ -653,6 +662,12 @@ mod tests {
             ..Default::default()
         };
         assert!(resolve(&c, &browser).unwrap_err().contains("no field"));
+        // KV v2 without data/: Vault's warning says why, not "no details"
+        let team = ConnConfig {
+            vault_path: "kv/team".into(),
+            ..c.clone()
+        };
+        assert!(resolve(&team, &browser).unwrap_err().contains("versioned"));
         // a secret written as JSON can hold a number
         let pin = ConnConfig {
             vault_path: "kv/data/pin".into(),

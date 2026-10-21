@@ -651,17 +651,32 @@ impl Session {
                 return Ok(format!("CREATE {kind} {t} AS\n{def};"));
             }
         }
-        // …a table is rebuilt from its columns.
+        // …a table is rebuilt from its columns, with their defaults and identity (without
+        // them a serial id would be a plain NOT NULL integer)
         let cols = self.columns(table)?;
+        let (schema, name) = table.split_once('.').unwrap_or(("public", table));
+        let extras: std::collections::HashMap<String, String> = self
+            .query(&format!(
+                "SELECT column_name, CASE WHEN is_identity = 'YES' THEN ' GENERATED ' || identity_generation || ' AS IDENTITY' \
+                 WHEN column_default IS NOT NULL THEN ' DEFAULT ' || column_default ELSE '' END \
+                 FROM information_schema.columns WHERE table_schema = {} AND table_name = {}",
+                driver.literal(schema),
+                driver.literal(name)
+            ))?
+            .rows
+            .into_iter()
+            .map(|r| (text(&r[0]).to_string(), text(&r[1]).to_string()))
+            .collect();
         let mut lines: Vec<String> = cols
             .rows
             .iter()
             .map(|c| {
                 format!(
-                    "    {} {}{}",
+                    "    {} {}{}{}",
                     driver.quote(text(&c[0])),
                     text(&c[1]),
-                    if text(&c[2]) == "NO" { " NOT NULL" } else { "" }
+                    if text(&c[2]) == "NO" { " NOT NULL" } else { "" },
+                    extras.get(text(&c[0])).map_or("", String::as_str)
                 )
             })
             .collect();

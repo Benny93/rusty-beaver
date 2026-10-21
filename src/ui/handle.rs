@@ -392,6 +392,17 @@ impl AppView {
                 {
                     return now(self, Err(e), window, cx, done);
                 }
+                // given SQL goes to a script tab, never a table tab's hidden editor (see set_sql)
+                if a["sql"].is_string()
+                    && let Some(conn) = self
+                        .tabs
+                        .get(self.active)
+                        .filter(|t| t.kind != TabKind::Sql)
+                        .map(|t| t.conn)
+                    && let Err(e) = self.activate_script_tab(conn, window, cx)
+                {
+                    return now(self, Err(e), window, cx, done);
+                }
                 if let Some(text) = a["sql"].as_str()
                     && let Some(t) = self.tabs.get(self.active)
                 {

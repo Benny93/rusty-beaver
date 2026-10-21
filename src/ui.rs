@@ -681,12 +681,12 @@ impl AppView {
             .tabs
             .iter()
             .filter_map(|t| {
-                t.title
-                    .strip_prefix("Script-")?
-                    .split(' ')
-                    .next()?
-                    .parse()
-                    .ok()
+                // "Script-2 <demo>", and "Script-2.sql" once saved under that name
+                let rest = t.title.strip_prefix("Script-")?;
+                let digits = rest
+                    .find(|c: char| !c.is_ascii_digit())
+                    .unwrap_or(rest.len());
+                rest[..digits].parse().ok()
             })
             .max()
             .unwrap_or(0)

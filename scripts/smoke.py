@@ -137,6 +137,13 @@ def main():
             call("new_sql_editor", {"connection": DB})
             assert "empty" in call("execute_editor", {}, ok=False)  # refused, not "started"
             assert "absolute" in call("save_script", {"path": "relative.sql"}, ok=False)
+            # a script saved under its own name keeps its number taken
+            title = [t for t in call("get_state")["tabs"] if t["active"]][0]["title"]
+            name = title.split(" ")[0]
+            call("save_script", {"path": os.path.join(tmp, name + ".sql")})
+            call("new_sql_editor", {"connection": DB})
+            again = [t for t in call("get_state")["tabs"] if t["active"]][0]["title"]
+            assert not again.startswith(name + " "), (title, again)
 
         def params_format_explain():
             r = call("run_sql", {"sql": "SELECT count(*) FROM beavers WHERE rank = :rank", "params": {"rank": "'Private'"}})

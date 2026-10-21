@@ -276,6 +276,8 @@ fn oidc_login(
             }
         ));
     }
+    // the state Vault put in the sign-in URL: a callback with another one is not ours
+    let state = query_params(&auth_url).get("state").cloned();
     open(&auth_url);
 
     // Wait for the browser to come back with ?code=…&state=…
@@ -300,13 +302,23 @@ fn oidc_login(
                     header.clear();
                 }
                 let target = line.split_whitespace().nth(1).unwrap_or("").to_string();
-                if !target.starts_with("/oidc/callback") {
+                let callback = target == "/oidc/callback" || target.starts_with("/oidc/callback?");
+                if !callback {
                     let _ = stream.write_all(
                         b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
                     );
                     continue;
                 }
                 let p = query_params(&target);
+                // an old tab or a prefetch of another sign-in: answer it, keep waiting for ours
+                let ours = state.as_ref().is_none_or(|s| p.get("state") == Some(s))
+                    && (p.contains_key("code") || p.contains_key("error"));
+                if !ours {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    continue;
+                }
                 let ok = p.contains_key("code");
                 let msg = if ok {
                     "Signed in to Vault. You can close this tab and go back to Rusty Beaver."
@@ -557,9 +569,16 @@ mod tests {
                     redirect = b["redirect_uri"].as_str().unwrap().to_string();
                     (
                         200,
-                        serde_json::json!({ "data": { "auth_url": format!("{me}/idp") } })
+                        serde_json::json!({ "data": { "auth_url": format!("{me}/idp?state=st") } })
                             .to_string(),
                         None,
+                    )
+                } else if target.starts_with("/stale") {
+                    // a callback of another sign-in (an old tab, a prefetch)
+                    (
+                        302,
+                        String::new(),
+                        Some(format!("{redirect}?code=bad&state=old")),
                     )
                 } else if target.starts_with("/idp") {
                     (
@@ -624,6 +643,19 @@ mod tests {
         };
         let token = oidc_login(&addr, "oidc", "", 0, &browser).unwrap();
         assert_eq!(token, "s.fake");
+        // a callback with another sign-in's state is not this one's answer
+        let stale = addr.clone();
+        let stale_first = move |url: &str| {
+            let (url, stale) = (url.to_string(), format!("{stale}/stale"));
+            std::thread::spawn(move || {
+                let _ = ureq::get(&stale).call();
+                let _ = ureq::get(&url).call();
+            });
+        };
+        assert_eq!(
+            oidc_login(&addr, "oidc", "", 0, &stale_first).unwrap(),
+            "s.fake"
+        );
         // a mount typed as /oidc/ is the mount oidc
         assert_eq!(
             oidc_login(&addr, "/oidc/", "", 0, &browser).unwrap(),

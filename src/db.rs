@@ -1232,9 +1232,10 @@ fn pg_err(e: postgres::Error) -> String {
 fn mysql_query(c: &mut mysql::Conn, sql: &str) -> Result<Vec<QueryResult>, String> {
     use mysql::Value as V;
     use mysql::prelude::Queryable;
-    // a script of CALLs: their trailing OK packets are dropped below. In a mixed script an
-    // UPDATE that matched nothing looks the same, and is a result of its own: kept there.
-    let calls = statement_heads(sql, true).iter().all(|(w, _)| w == "CALL");
+    // Which statement each result belongs to: one result each, a CALL its result sets and then
+    // an OK packet, dropped below. An UPDATE that matched nothing looks like that packet.
+    let heads = statement_heads(sql, true);
+    let (mut stmt, mut call_sets) = (0, 0);
     let mut out = vec![];
     let mut result = c.query_iter(sql).map_err(|e| e.to_string())?;
     while let Some(set) = result.iter() {
@@ -1276,17 +1277,19 @@ fn mysql_query(c: &mut mysql::Conn, sql: &str) -> Result<Vec<QueryResult>, Strin
                 .collect();
             push_row(&mut r, cells);
         }
+        let call = heads.get(stmt).is_some_and(|(w, _)| w == "CALL");
+        if call && !r.columns.is_empty() {
+            call_sets += 1; // more of this CALL's result sets may follow
+            out.push(r);
+            continue;
+        }
+        stmt += 1;
+        // CALL ends its result sets with an OK packet: no result of its own (it would be
+        // shown as "0 updated" instead of the procedure's rows)
+        if call && std::mem::take(&mut call_sets) > 0 {
+            continue;
+        }
         if r.columns.is_empty() {
-            // CALL ends its result sets with an OK packet: no result of its own (it would be
-            // shown as "0 updated" instead of the procedure's rows)
-            if calls
-                && affected == 0
-                && out
-                    .last()
-                    .is_some_and(|p: &QueryResult| !p.columns.is_empty())
-            {
-                continue;
-            }
             r.affected = Some(affected);
         }
         out.push(r);

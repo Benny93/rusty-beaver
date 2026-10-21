@@ -267,7 +267,7 @@ pub fn run(mcp_port: u16) {
                     );
                     show_scrollbars(cx);
                     let mcp = match mcp_status.recv_timeout(Duration::from_secs(2)) {
-                        Ok(Ok(())) => format!("MCP: http://127.0.0.1:{mcp_port}/mcp"),
+                        Ok(Ok(port)) => format!("MCP: http://127.0.0.1:{port}/mcp"),
                         Ok(Err(e)) => format!("MCP off ({e})"),
                         Err(_) => "MCP starting…".into(),
                     };

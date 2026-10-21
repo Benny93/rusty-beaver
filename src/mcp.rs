@@ -1005,7 +1005,7 @@ pub fn spawn(
     port: u16,
 ) -> (
     mpsc::UnboundedReceiver<Call>,
-    std::sync::mpsc::Receiver<Result<(), String>>,
+    std::sync::mpsc::Receiver<Result<u16, String>>,
 ) {
     use rmcp::transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -1031,7 +1031,9 @@ pub fn spawn(
                 .layer(axum::middleware::from_fn(local_only));
             match tokio::net::TcpListener::bind(("127.0.0.1", port)).await {
                 Ok(listener) => {
-                    let _ = status_tx.send(Ok(()));
+                    // the bound port: with 0 the OS picks one, and the toolbar shows that
+                    let bound = listener.local_addr().map_or(port, |a| a.port());
+                    let _ = status_tx.send(Ok(bound));
                     if let Err(e) = axum::serve(listener, router).await {
                         eprintln!("mcp: {e}");
                     }

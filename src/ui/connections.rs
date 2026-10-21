@@ -150,7 +150,20 @@ impl AppView {
         let Some(ix) = self.conn_ix(id) else { return };
         let c = &self.conns[ix];
         let names: Vec<String> = c.tables.iter().map(|(n, _)| n.clone()).collect();
-        c.catalog.lock().unwrap().tables = names.clone();
+        {
+            let mut cat = c.catalog.lock().unwrap();
+            // columns of tables that are gone (dropped, another database) go too
+            let keep: std::collections::HashSet<String> = names
+                .iter()
+                .flat_map(|n| {
+                    let n = n.to_lowercase();
+                    let bare = n.split_once('.').map(|(_, b)| b.to_string());
+                    std::iter::once(n).chain(bare)
+                })
+                .collect();
+            cat.columns.retain(|k, _| keep.contains(k));
+            cat.tables = names.clone();
+        }
         let (Some(session), catalog) = (c.session.clone(), c.catalog.clone()) else {
             return;
         };

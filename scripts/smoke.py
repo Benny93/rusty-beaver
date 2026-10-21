@@ -89,6 +89,15 @@ def main():
             assert "one statement" in call("explain", {"sql": "SELECT 1; DELETE FROM missions"}, ok=False)
             labels = [c["label"] for c in call("sql_completions", {"connection": DB, "sql": "SELECT b. FROM beavers b", "offset": 9})]
             assert "logs_chewed" in labels, labels
+            # a dropped table's columns go with it
+            call("run_sql", {"connection": DB, "sql": "CREATE TABLE gone(zap_col INT)"})
+            time.sleep(0.5)  # the catalog loads in the background
+            done = lambda: [c["label"] for c in call("sql_completions", {"connection": DB, "sql": "SELECT zap", "offset": 10})]
+            assert "zap_col" in done(), done()
+            call("run_sql", {"connection": DB, "sql": "DROP TABLE gone"})
+            call("refresh_connection", {"connection": DB})
+            time.sleep(0.5)
+            assert "zap_col" not in done(), done()
 
         def table_editing():
             assert call("open_table", {"connection": DB, "table": "lodges"})["row_count"] == 4

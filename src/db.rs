@@ -1849,7 +1849,17 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
 /// line holding just "" is a row with one empty field.
 /// The separator is the one the header line has most of outside quotes: `,`, `;` (Excel in
 /// German and other locales) or tab; `,` on a tie.
+#[cfg(test)]
 pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
+    csv_fields(text)
+        .into_iter()
+        .map(|r| r.into_iter().map(|(v, _)| v).collect())
+        .collect()
+}
+
+/// `parse_csv`, with each field's text and whether it was quoted ("" is an empty text, an
+/// empty field is NULL).
+fn csv_fields(text: &str) -> Vec<Vec<(String, bool)>> {
     let header = text
         .trim_start_matches('\u{feff}')
         .lines()
@@ -1864,7 +1874,7 @@ pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
     let mut rows = vec![];
     let (mut row, mut field) = (vec![], String::new());
     let mut chars = text.trim_start_matches('\u{feff}').chars().peekable();
-    let (mut quoted, mut had_quote) = (false, false);
+    let (mut quoted, mut had_quote, mut field_quoted) = (false, false, false);
     while let Some(c) = chars.next() {
         match (quoted, c) {
             (true, '"') if chars.peek() == Some(&'"') => {
@@ -1873,12 +1883,20 @@ pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
             }
             (true, '"') => quoted = false,
             (true, c) => field.push(c),
-            (false, '"') if field.is_empty() => (quoted, had_quote) = (true, true),
-            (false, c) if c == sep => row.push(std::mem::take(&mut field)),
+            (false, '"') if field.is_empty() => {
+                (quoted, had_quote, field_quoted) = (true, true, true)
+            }
+            (false, c) if c == sep => row.push((
+                std::mem::take(&mut field),
+                std::mem::take(&mut field_quoted),
+            )),
             (false, '\r') => {}
             (false, '\n') => {
-                row.push(std::mem::take(&mut field));
-                if had_quote || !(row.len() == 1 && row[0].is_empty()) {
+                row.push((
+                    std::mem::take(&mut field),
+                    std::mem::take(&mut field_quoted),
+                ));
+                if had_quote || !(row.len() == 1 && row[0].0.is_empty()) {
                     rows.push(std::mem::take(&mut row));
                 }
                 row.clear();
@@ -1888,7 +1906,7 @@ pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
         }
     }
     if had_quote || !field.is_empty() || !row.is_empty() {
-        row.push(field);
+        row.push((field, field_quoted));
         rows.push(row);
     }
     rows
@@ -1913,13 +1931,13 @@ pub fn csv_text(bytes: Vec<u8>) -> Result<String, String> {
 }
 
 /// INSERT statements for CSV text whose header row names the table's columns.
-/// Empty fields and NULL become SQL NULL.
+/// Empty fields and NULL become SQL NULL; quoted ("", "NULL") they are text.
 pub fn csv_inserts(driver: Driver, table: &str, text: &str) -> Result<Vec<String>, String> {
-    let mut rows = parse_csv(text).into_iter();
+    let mut rows = csv_fields(text).into_iter();
     let header = rows.next().ok_or("the file is empty")?;
     let cols = header
         .iter()
-        .map(|h| driver.quote(h.trim()))
+        .map(|(h, _)| driver.quote(h.trim()))
         .collect::<Vec<_>>()
         .join(", ");
     rows.enumerate()
@@ -1934,8 +1952,8 @@ pub fn csv_inserts(driver: Driver, table: &str, text: &str) -> Result<Vec<String
             }
             let vals = r
                 .iter()
-                .map(|v| {
-                    if v.is_empty() || v == "NULL" {
+                .map(|(v, quoted)| {
+                    if !quoted && (v.is_empty() || v == "NULL") {
                         "NULL".into()
                     } else {
                         driver.literal(v)
@@ -1953,20 +1971,20 @@ pub fn csv_inserts(driver: Driver, table: &str, text: &str) -> Result<Vec<String
 
 /// RFC 4180 CSV.
 pub fn to_csv(r: &QueryResult) -> String {
-    let one_column = r.columns.len() == 1;
-    let cell = |s: &str| {
-        // an empty line would read as a blank line: "" keeps a one-column row
-        if s.contains([',', ';', '\t', '"', '\n', '\r']) || one_column && s.is_empty() {
+    // NULL is a bare NULL, as the import reads it; an empty text and the text 'NULL' are
+    // quoted so they stay text (and "" keeps a one-column row from reading as a blank line)
+    let cell = |v: Option<&str>| match v {
+        None => "NULL".to_string(),
+        Some(s) if s.contains([',', ';', '\t', '"', '\n', '\r']) || s.is_empty() || s == "NULL" => {
             format!("\"{}\"", s.replace('"', "\"\""))
-        } else {
-            s.to_string()
         }
+        Some(s) => s.to_string(),
     };
-    let line = |row: Vec<&str>| row.into_iter().map(cell).collect::<Vec<_>>().join(",");
-    let mut out = line(r.columns.iter().map(String::as_str).collect());
+    let line = |row: Vec<Option<&str>>| row.into_iter().map(cell).collect::<Vec<_>>().join(",");
+    let mut out = line(r.columns.iter().map(|c| Some(c.as_str())).collect());
     for row in &r.rows {
         out.push_str("\r\n");
-        out.push_str(&line(row.iter().map(text).collect())); // NULL as NULL, as the import reads it
+        out.push_str(&line(row.iter().map(|v| v.as_deref()).collect()));
     }
     out.push_str("\r\n");
     out
@@ -2115,6 +2133,32 @@ mod tests {
             (&"NULL".into(), &serde_json::Value::Null)
         );
         assert!(export(&r, "sql", Driver::Sqlite, "t").contains("VALUES ('1', 'NULL')"));
+    }
+
+    #[test]
+    fn csv_keeps_empty_text_and_text_null_apart_from_null() {
+        let mut s = Session::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+        s.query("CREATE TABLE t(id INT, v TEXT)").unwrap();
+        let r = QueryResult {
+            columns: vec!["id".into(), "v".into()],
+            rows: vec![
+                vec![Some("1".into()), Some("".into())],
+                vec![Some("2".into()), Some("NULL".into())],
+                vec![Some("3".into()), None],
+            ],
+            ..Default::default()
+        };
+        s.apply(&csv_inserts(Driver::Sqlite, "t", &to_csv(&r)).unwrap())
+            .unwrap();
+        let back = s.query("SELECT v FROM t ORDER BY id").unwrap().rows;
+        assert_eq!(
+            back,
+            [
+                vec![Some("".to_string())],
+                vec![Some("NULL".into())],
+                vec![None]
+            ]
+        );
     }
 
     #[test]

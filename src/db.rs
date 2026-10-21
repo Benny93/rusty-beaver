@@ -675,6 +675,7 @@ impl Session {
         let extras: std::collections::HashMap<String, String> = self
             .query(&format!(
                 "SELECT column_name, CASE WHEN is_identity = 'YES' THEN ' GENERATED ' || identity_generation || ' AS IDENTITY' \
+                 WHEN is_generated = 'ALWAYS' THEN ' GENERATED ALWAYS AS (' || generation_expression || ') STORED' \
                  WHEN column_default IS NOT NULL THEN ' DEFAULT ' || column_default ELSE '' END \
                  FROM information_schema.columns WHERE table_schema = {} AND table_name = {}",
                 driver.literal(schema),

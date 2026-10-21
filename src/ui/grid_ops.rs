@@ -252,7 +252,8 @@ impl AppView {
                     .row_id(new)
                     .unwrap_or_default();
                 for (c, v) in values.into_iter().enumerate() {
-                    if !key.contains(&c) && v != "NULL" {
+                    // a blob's "[BLOB n bytes]" is no value to insert
+                    if !key.contains(&c) && v != "NULL" && !db::is_blob_text(&v) {
                         self.set_cell(ix, new_id, c, Some(v), cx);
                     }
                 }

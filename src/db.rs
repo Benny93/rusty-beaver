@@ -785,6 +785,11 @@ fn push_row(r: &mut QueryResult, row: Vec<String>) {
     }
 }
 
+/// How a SQLite blob shows in the grid: a description, not the value.
+pub fn is_blob_text(v: &str) -> bool {
+    v.starts_with("[BLOB ") && v.ends_with(" bytes]")
+}
+
 fn sqlite_query(c: &rusqlite::Connection, sql: &str) -> Result<Vec<QueryResult>, String> {
     use rusqlite::fallible_iterator::FallibleIterator as _;
     use rusqlite::types::ValueRef;
@@ -819,7 +824,7 @@ fn sqlite_query(c: &rusqlite::Connection, sql: &str) -> Result<Vec<QueryResult>,
                     Ok(ValueRef::Integer(v)) => v.to_string(),
                     Ok(ValueRef::Real(v)) => v.to_string(),
                     Ok(ValueRef::Text(t)) => String::from_utf8_lossy(t).into_owned(),
-                    Ok(ValueRef::Blob(b)) => format!("[BLOB {} bytes]", b.len()),
+                    Ok(ValueRef::Blob(b)) => format!("[BLOB {} bytes]", b.len()), // see is_blob_text
                 })
                 .collect();
             push_row(&mut r, cells);

@@ -180,14 +180,30 @@ fn aliases(text: &str) -> HashMap<String, String> {
     out
 }
 
-/// The text ends inside a '…' string or a comment (where no name is typed).
-fn in_literal(s: &str) -> bool {
+/// The text ends inside a '…' string or a comment (where no name is typed). `mysql`:
+/// backslash escapes and # comments.
+fn in_literal(s: &str, mysql: bool) -> bool {
     let b = s.as_bytes();
     let mut i = 0;
     while i < b.len() {
         match b[i] {
-            b'\'' => match s[i + 1..].find('\'') {
-                Some(n) => i += n + 1,
+            b'\'' => {
+                i += 1;
+                while i < b.len() && b[i] != b'\'' {
+                    i += if mysql && b[i] == b'\\' { 2 } else { 1 };
+                }
+                if i >= b.len() {
+                    return true;
+                }
+            }
+            // a quoted name: its ' is no string (an open one is still being typed: no return)
+            b'"' | b'`' => {
+                if let Some(n) = s[i + 1..].find(b[i] as char) {
+                    i += n + 1;
+                }
+            }
+            b'#' if mysql => match s[i..].find('\n') {
+                Some(n) => i += n,
                 None => return true,
             },
             b'-' if b.get(i + 1) == Some(&b'-') => match s[i..].find('\n') {
@@ -209,7 +225,8 @@ fn in_literal(s: &str) -> bool {
 pub fn suggest(text: &str, offset: usize, catalog: &Catalog) -> (usize, Vec<Suggestion>) {
     // Offsets come from agents too: never cut inside a multi-byte character.
     let before = &text[..text.floor_char_boundary(offset)];
-    if in_literal(before) {
+    // the dialect is unknown here: only where both readings agree (O\'Brien, 'C:\')
+    if in_literal(before, false) && in_literal(before, true) {
         return (before.len(), vec![]);
     }
     // aliases of the statement at the cursor, not of others in the editor that reuse a name
@@ -587,9 +604,16 @@ mod tests {
         ] {
             assert!(suggest(text, text.len(), &c).1.is_empty(), "{text}");
         }
-        // after them it goes on
-        let text = "SELECT 'a', /* x */ na";
-        assert!(!suggest(text, text.len(), &c).1.is_empty());
+        // after them it goes on, also after MySQL's escapes and # comments and a ' in a name
+        for text in [
+            "SELECT 'a', /* x */ na",
+            "SELECT * FROM beavers WHERE n = 'O\\'Brien' AND na",
+            "SELECT \"Bob's\" FROM beavers WHERE na",
+            "SELECT 1 # don't\nFROM beavers WHERE na",
+            "SELECT 'C:\\' AS p, na",
+        ] {
+            assert!(!suggest(text, text.len(), &c).1.is_empty(), "{text}");
+        }
     }
 
     #[test]

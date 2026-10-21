@@ -1148,6 +1148,9 @@ fn pg_err(e: postgres::Error) -> String {
 fn mysql_query(c: &mut mysql::Conn, sql: &str) -> Result<Vec<QueryResult>, String> {
     use mysql::Value as V;
     use mysql::prelude::Queryable;
+    // a script with a CALL: its trailing OK packet is dropped below (not an UPDATE that
+    // matched nothing, which is a result of its own)
+    let calls = statement_heads(sql, true).iter().any(|(w, _)| w == "CALL");
     let mut out = vec![];
     let mut result = c.query_iter(sql).map_err(|e| e.to_string())?;
     while let Some(set) = result.iter() {
@@ -1185,6 +1188,16 @@ fn mysql_query(c: &mut mysql::Conn, sql: &str) -> Result<Vec<QueryResult>, Strin
             push_row(&mut r, cells);
         }
         if r.columns.is_empty() {
+            // CALL ends its result sets with an OK packet: no result of its own (it would be
+            // shown as "0 updated" instead of the procedure's rows)
+            if calls
+                && affected == 0
+                && out
+                    .last()
+                    .is_some_and(|p: &QueryResult| !p.columns.is_empty())
+            {
+                continue;
+            }
             r.affected = Some(affected);
         }
         out.push(r);

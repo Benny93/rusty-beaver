@@ -136,6 +136,11 @@ impl Grid {
         self.r.rows.truncate(keep);
         self.order.retain(|&id| id < keep);
         self.changes = Changes::default();
+        // the old values decide again what a search shows
+        if !self.search.is_empty() {
+            let s = self.search.clone();
+            self.set_search(&s);
+        }
     }
 }
 
@@ -503,6 +508,22 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(chart_columns(&g.r), (Some(0), vec![1]));
+    }
+
+    #[test]
+    fn revert_shows_what_the_search_finds_again() {
+        let mut g = Grid::default();
+        g.set(QueryResult {
+            columns: vec!["a".into()],
+            rows: cells(vec![vec!["abc"], vec!["x"]]),
+            ..Default::default()
+        });
+        g.set_search("ab");
+        g.changes.cells.insert((0, 0), Some("zzz".into()));
+        g.set_search("abc"); // the edited row no longer matches
+        assert!(g.order.is_empty());
+        g.revert(); // back to abc: found again
+        assert_eq!(g.order, [0]);
     }
 
     #[test]

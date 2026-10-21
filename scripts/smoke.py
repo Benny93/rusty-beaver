@@ -88,6 +88,7 @@ def main():
             cols = call("describe_table", {"connection": DB, "table": "missions"})["rows"]
             assert ["leader_id", "INTEGER", "YES", "FK", "beavers.id"] in cols, cols
             assert "no table" in call("describe_table", {"connection": DB, "table": "usres"}, ok=False)
+            assert "usres" not in json.dumps(call("get_state")["selected"])  # not selected in the navigator
             before = len(call("get_state")["tabs"])
             call("open_table", {"connection": DB, "table": "usres"}, ok=False)
             assert len(call("get_state")["tabs"]) == before  # no tab for a table that is not there

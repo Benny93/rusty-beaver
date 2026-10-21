@@ -83,11 +83,18 @@ impl AppView {
             },
             "describe_table" => match self.conn_by_name(&s("connection")) {
                 Ok(id) => {
-                    self.selected = Some((id, Some(s("table"))));
+                    let before = self.selected.replace((id, Some(s("table"))));
                     if let Some(ix) = self.conn_ix(id) {
                         self.conns[ix].expanded = true;
                     }
-                    self.describe(id, s("table"), window, cx, done)
+                    // a table that is not there stays unselected
+                    let d: Done = Box::new(move |v, r, w, cx| {
+                        if r.is_err() {
+                            v.selected = before;
+                        }
+                        done(v, r, w, cx)
+                    });
+                    self.describe(id, s("table"), window, cx, d)
                 }
                 Err(e) => now(self, Err(e), window, cx, done),
             },

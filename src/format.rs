@@ -353,6 +353,11 @@ pub fn format_sql(sql: &str) -> String {
 
 /// Comment the lines `range` touches with `-- `, or uncomment them when all already are.
 pub fn toggle_comment(text: &str, range: std::ops::Range<usize>) -> String {
+    // whole lines selected end at the next line's start: that line is not part of it
+    let mut range = range;
+    if range.end > range.start && text[..range.end.min(text.len())].ends_with('\n') {
+        range.end -= 1;
+    }
     let start = text[..range.start.min(text.len())]
         .rfind('\n')
         .map_or(0, |i| i + 1);
@@ -411,6 +416,8 @@ mod tests {
 
     #[test]
     fn comments_toggle() {
+        // lines 1-2 selected up to the start of line 3: line 3 stays as it is
+        assert_eq!(toggle_comment("a\nb\nc", 0..4), "-- a\n-- b\nc");
         let t = "SELECT 1;\n  SELECT 2,\n  3;\nSELECT 4;";
         let c = toggle_comment(t, 12..24); // from line 2 into line 3
         assert_eq!(c, "SELECT 1;\n  -- SELECT 2,\n  -- 3;\nSELECT 4;");

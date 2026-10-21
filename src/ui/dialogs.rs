@@ -359,9 +359,18 @@ impl AppView {
         Ok(id)
     }
 
-    pub(super) fn delete_connection(&mut self, id: u64, cx: &mut Context<Self>) {
-        if let Some(c) = self.conns.iter().find(|c| c.id == id) {
+    pub(super) fn delete_connection(
+        &mut self,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(c) = self.conns.iter_mut().find(|c| c.id == id) {
             db::forget_password(&c.cfg);
+            // callers waiting for its connect get an answer
+            for w in std::mem::take(&mut c.waiting) {
+                w(self, Err("connection is gone".into()), window, cx);
+            }
         }
         self.conns.retain(|c| c.id != id);
         let active = self.tab_key(self.active);

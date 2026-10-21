@@ -38,12 +38,10 @@ impl AppView {
         );
         if t.running {
             // it would wait for the lock, and the first one's end would clear `running`
-            return done(
-                self,
-                Err("a query is already running in this tab: wait or cancel it".into()),
-                window,
-                cx,
-            );
+            let e = "a query is already running in this tab: wait or cancel it".to_string();
+            self.status = e.clone(); // the toolbar and shortcuts pass no `done` that shows it
+            cx.notify();
+            return done(self, Err(e), window, cx);
         }
         let raw = matches!(src, Source::Raw(_));
         let sql = match src {

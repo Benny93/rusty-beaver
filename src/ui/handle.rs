@@ -45,7 +45,7 @@ impl AppView {
             }
             "delete_connection" => match self.conn_by_name(&s("connection")) {
                 Ok(id) => {
-                    self.delete_connection(id, cx);
+                    self.delete_connection(id, window, cx);
                     now(
                         self,
                         Ok(json!({ "deleted": s("connection") })),
@@ -219,6 +219,11 @@ impl AppView {
                         done,
                     );
                 };
+                if !t.grid.read(cx).delegate().changes.is_empty() {
+                    // before the filter box changes: it would show a filter not applied
+                    let e = "save or revert the pending changes first".to_string();
+                    return now(self, Err(e), window, cx, done);
+                }
                 let f = s("filter");
                 t.filter.update(cx, |i, cx| i.set_value(f, window, cx));
                 self.tabs[self.active].limit = PAGE;

@@ -54,6 +54,9 @@ impl AppView {
         match op {
             GridOp::FilterBy | GridOp::FilterExclude => {
                 editable()?;
+                if !g.changes.is_empty() {
+                    return Err("save or revert the pending changes first".into());
+                }
                 let (row, col) = need_cell()?;
                 let id = g.row_id(row).unwrap_or_default();
                 let (name, v) = (driver.quote(&g.r.columns[col]), g.value(id, col));
@@ -347,7 +350,7 @@ impl AppView {
                     .detach();
                     return Ok(Some("Waiting for confirmation…".into()));
                 }
-                self.tabs[ix].running = true;
+                (self.tabs[ix].running, self.tabs[ix].started) = (true, Some(Instant::now()));
                 let key = self.tabs[ix].grid.entity_id();
                 // Manual commit: the changes join the open transaction instead of committing.
                 let (manual, in_tx) = self

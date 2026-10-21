@@ -235,12 +235,12 @@ impl AppView {
                 if let Err(e) = &out {
                     v.status = format!("Import failed (nothing written): {e}");
                 }
-                // Refresh an open data tab of that table.
-                if let Some(i) = v
-                    .tabs
-                    .iter()
-                    .position(|t| t.conn == id && t.kind == TabKind::Table(table.clone()))
-                {
+                // Refresh an open data tab of that table (unless it has unsaved edits).
+                if let Some(i) = v.tabs.iter().position(|t| {
+                    t.conn == id
+                        && t.kind == TabKind::Table(table.clone())
+                        && t.grid.read(cx).delegate().changes.is_empty()
+                }) {
                     v.reload_table(i, w, cx, Box::new(|_, _, _, _| {}));
                 }
                 cx.notify();
@@ -285,7 +285,11 @@ impl AppView {
                 // Rolled-back rows should disappear from open table tabs.
                 if !commit {
                     for i in 0..v.tabs.len() {
-                        if v.tabs[i].conn == id && matches!(v.tabs[i].kind, TabKind::Table(_)) {
+                        let t = &v.tabs[i];
+                        if t.conn == id
+                            && matches!(t.kind, TabKind::Table(_))
+                            && t.grid.read(cx).delegate().changes.is_empty()
+                        {
                             v.reload_table(i, w, cx, Box::new(|_, _, _, _| {}));
                         }
                     }
@@ -364,9 +368,9 @@ impl AppView {
             &["Delete", "Cancel"],
             cx,
         );
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             if answer.await == Ok(0) {
-                let _ = this.update(cx, |v, cx| v.delete_connection(id, cx));
+                let _ = this.update_in(cx, |v, w, cx| v.delete_connection(id, w, cx));
             }
         })
         .detach();

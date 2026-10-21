@@ -12,7 +12,7 @@ impl AppView {
         done: Done,
     ) {
         let tab = self.open_tab(id, TabKind::Diagram, String::new(), window, cx);
-        self.tabs[tab].running = true;
+        (self.tabs[tab].running, self.tabs[tab].started) = (true, Some(Instant::now()));
         let key = self.tabs[tab].grid.entity_id();
         self.with_session::<(Vec<crate::er::Table>, Vec<db::ForeignKey>)>(
             id,

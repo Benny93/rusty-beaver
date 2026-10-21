@@ -1332,11 +1332,16 @@ fn quote_end(b: &[u8], i: usize, mysql: bool) -> usize {
 fn writes(sql: &str, mysql: bool) -> bool {
     const WRITES: &[&str] = &[
         "INSERT", "UPDATE", "DELETE", "MERGE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT",
-        "REVOKE", "RENAME", "REPLACE", "COPY", "CALL", "DO", "INTO", "LOAD", "VACUUM", "REINDEX",
-        "CLUSTER", "COMMENT", "LOCK", "IMPORT",
+        "REVOKE", "RENAME", "INTO",
+    ];
+    // Only as a statement's first word: "comment" and "lock" are column names too.
+    const LEADING: &[&str] = &[
+        "REPLACE", "COPY", "CALL", "DO", "LOAD", "VACUUM", "REINDEX", "CLUSTER", "COMMENT", "LOCK",
+        "IMPORT",
     ];
     let b = sql.as_bytes();
     let mut i = 0;
+    let mut first = true;
     while i < b.len() {
         match b[i] {
             b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
@@ -1357,19 +1362,18 @@ fn writes(sql: &str, mysql: bool) -> bool {
                     continue;
                 }
             }
+            b';' => first = true,
             c if c.is_ascii_alphabetic() => {
                 let start = i;
                 while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
                     i += 1;
                 }
                 let word = &sql[start..i];
-                // replace(s, a, b) is a string function
-                let call = sql[i..].trim_start().starts_with('(');
-                if WRITES.iter().any(|w| w.eq_ignore_ascii_case(word))
-                    && !(call && word.eq_ignore_ascii_case("REPLACE"))
-                {
+                let is = |list: &[&str]| list.iter().any(|w| w.eq_ignore_ascii_case(word));
+                if is(WRITES) || first && is(LEADING) {
                     return true;
                 }
+                first = false;
                 continue;
             }
             _ => {}
@@ -2125,6 +2129,8 @@ mod tests {
         assert!(is_write("SELECT j #- '{a}' FROM t; DELETE FROM t"));
         assert!(!is_write(r"SELECT 'a\', 'b' -- update"));
         assert!(is_write("SELECT * INTO newt FROM t"));
+        assert!(!is_write("SELECT id, comment, lock FROM reviews")); // column names
+        assert!(is_write("SELECT 1; COMMENT ON TABLE t IS 'x'"));
     }
 
     #[test]

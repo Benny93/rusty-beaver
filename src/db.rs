@@ -262,10 +262,12 @@ impl Changes {
                 by_row.entry(*row).or_default().push((*col, v));
             }
         }
+        // UPDATEs before INSERTs: a key renamed in the grid can go to a new row
+        let mut inserts = vec![];
         for &row in self.inserted.iter().filter(|r| !self.deleted.contains(r)) {
             let cells = by_row.remove(&row).unwrap_or_default();
             if cells.is_empty() {
-                out.push(if driver == Driver::Mysql {
+                inserts.push(if driver == Driver::Mysql {
                     format!("INSERT INTO {t} () VALUES ();")
                 } else {
                     format!("INSERT INTO {t} DEFAULT VALUES;")
@@ -281,7 +283,7 @@ impl Changes {
                     .map(|(_, v)| driver.literal_opt(v.as_deref()))
                     .collect::<Vec<_>>()
                     .join(", ");
-                out.push(format!("INSERT INTO {t} ({cols}) VALUES ({vals});"));
+                inserts.push(format!("INSERT INTO {t} ({cols}) VALUES ({vals});"));
             }
         }
         for (row, cells) in by_row {
@@ -292,6 +294,7 @@ impl Changes {
                 .join(", ");
             out.push(format!("UPDATE {t} SET {set} WHERE {};", where_key(row)));
         }
+        out.extend(inserts);
         Ok(out)
     }
 }
@@ -2501,8 +2504,8 @@ mod tests {
             sql,
             [
                 "DELETE FROM \"t\" WHERE (\"id\" = '3' OR \"id\" = 3);",
-                "INSERT INTO \"t\" (\"name\") VALUES ('new');",
                 "UPDATE \"t\" SET \"name\" = 'it''s', \"n\" = NULL WHERE (\"id\" = '2' OR \"id\" = 2);",
+                "INSERT INTO \"t\" (\"name\") VALUES ('new');",
             ]
         );
         s.apply(&sql).unwrap();
@@ -2515,6 +2518,20 @@ mod tests {
                 vec!["new".into(), "NULL".into()]
             ]
         );
+        // A key renamed, and a new row taking the old one: the UPDATE goes first.
+        let r = s.query("SELECT * FROM t ORDER BY id").unwrap();
+        let mut rows = r.rows.clone();
+        rows.push(vec![None; 3]);
+        let mut c = Changes::default();
+        c.cells.insert((0, 0), Some("100".into()));
+        c.inserted.insert(3);
+        c.cells.insert((3, 0), Some("1".into()));
+        let sql = c
+            .to_sql(Driver::Sqlite, "t", &r.columns, &rows, &[0])
+            .unwrap();
+        s.apply(&sql).unwrap();
+        s.query("DELETE FROM t WHERE id = 1 AND name IS NULL; UPDATE t SET id = 1 WHERE id = 100")
+            .unwrap();
         // A failing statement rolls everything back.
         assert!(s.apply(&["DELETE FROM t".into(), "nope".into()]).is_err());
         assert_eq!(

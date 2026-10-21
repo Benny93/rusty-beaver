@@ -1347,7 +1347,14 @@ pub fn load_connections() -> (Vec<ConnConfig>, bool, Option<String>) {
             if let Err(e) = bad.as_ref().map(|_| ())
                 && path.exists()
             {
-                let aside = path.with_extension("json.invalid");
+                // never over an earlier copy: that one may be the last of the user's list
+                let aside = (1..)
+                    .map(|n| match n {
+                        1 => path.with_extension("json.invalid"),
+                        n => path.with_extension(format!("json.invalid.{n}")),
+                    })
+                    .find(|p| !p.exists())
+                    .unwrap_or_default();
                 note = Some(match std::fs::rename(&path, &aside) {
                     Ok(()) => format!(
                         "{} did not load ({e}); it is now {}",
@@ -2819,6 +2826,17 @@ mod tests {
             std::fs::read_to_string(&aside).unwrap(),
             r#"[{"name":"typo",}]"#
         );
+        // a second bad file keeps the first one's copy
+        std::fs::write(&file, "second").unwrap();
+        let (_, _, note) = load_connections();
+        assert_eq!(
+            std::fs::read_to_string(&aside).unwrap(),
+            r#"[{"name":"typo",}]"#
+        );
+        let second = note.unwrap();
+        let copy = second.rsplit(" it is now ").next().unwrap();
+        assert_eq!(std::fs::read_to_string(copy).unwrap(), "second");
+        let _ = std::fs::remove_file(copy);
         let _ = std::fs::remove_file(&aside);
         let _ = std::fs::remove_file(&file);
     }

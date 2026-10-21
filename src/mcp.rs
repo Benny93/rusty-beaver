@@ -447,7 +447,9 @@ impl Tools {
             .await
     }
 
-    #[tool(description = "Replace the text of the active tab's SQL editor.")]
+    #[tool(
+        description = "Replace the text of the active tab's SQL editor (from a table or ER tab: of a new script tab)."
+    )]
     async fn set_sql(
         &self,
         Parameters(a): Parameters<TextArg>,

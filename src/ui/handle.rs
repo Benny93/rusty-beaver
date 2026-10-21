@@ -115,12 +115,13 @@ impl AppView {
             "set_sql" => {
                 // into a script tab: a table tab's hidden editor holds its SELECT, and SQL run
                 // from there would fill its editable grid with other rows
+                // …a new one: replacing another script's text would lose it
                 if let Some(conn) = self
                     .tabs
                     .get(self.active)
                     .filter(|t| t.kind != TabKind::Sql)
                     .map(|t| t.conn)
-                    && let Err(e) = self.activate_script_tab(conn, window, cx)
+                    && let Err(e) = self.new_editor(Some(conn), window, cx)
                 {
                     return now(self, Err(e), window, cx, done);
                 }

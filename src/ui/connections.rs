@@ -26,7 +26,8 @@ impl AppView {
                 let tables: Vec<String> = c
                     .tables
                     .iter()
-                    .filter(|(_, k)| k != "VIEW")
+                    // views and materialized views (count(*) of one not refreshed yet fails)
+                    .filter(|(_, k)| !k.ends_with("VIEW"))
                     .map(|(n, _)| n.clone())
                     .take(200)
                     .collect();

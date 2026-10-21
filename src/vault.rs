@@ -62,6 +62,11 @@ fn parse_ref(r: &str) -> Result<(String, Option<String>), String> {
     Ok((path.to_string(), field.map(String::from)))
 }
 
+/// A VAULT_ variable, trimmed (`$(cat file)` keeps a newline); empty is unset.
+fn env_value(v: Option<String>) -> Option<String> {
+    v.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
 /// Tokens of this session, per Vault address.
 static TOKENS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
@@ -178,7 +183,7 @@ fn token(c: &ConnConfig, addr: &str, open: &dyn Fn(&str), refused: &str) -> Resu
     if let Some(t) = cached(addr).filter(|t| t != refused && token_valid(addr, t)) {
         return Ok(t);
     }
-    let from_env = std::env::var("VAULT_TOKEN").ok();
+    let from_env = env_value(std::env::var("VAULT_TOKEN").ok());
     let from_file = dirs::home_dir()
         .and_then(|h| std::fs::read_to_string(h.join(".vault-token")).ok())
         .map(|s| s.trim().to_string());
@@ -437,7 +442,7 @@ pub fn resolve(c: &ConnConfig, open: &dyn Fn(&str)) -> Result<ConnConfig, String
     }
     let addr = Some(c.vault_addr.trim().to_string())
         .filter(|a| !a.is_empty())
-        .or_else(|| std::env::var("VAULT_ADDR").ok())
+        .or_else(|| env_value(std::env::var("VAULT_ADDR").ok()))
         .ok_or("no Vault address: enter it in the connection, or set VAULT_ADDR")?;
     let mut tok = token(c, &addr, open, "")?;
     let (mut status, mut v) = call(&addr, "GET", &path, Some(&tok), &[], None)?;
@@ -491,6 +496,17 @@ pub fn resolve(c: &ConnConfig, open: &dyn Fn(&str)) -> Result<ConnConfig, String
 mod tests {
     use super::*;
     use std::io::Read;
+
+    #[test]
+    fn env_values_are_trimmed_and_empty_is_unset() {
+        // `export VAULT_TOKEN=$(cat file)` keeps a newline; VAULT_ADDR= is no address
+        assert_eq!(
+            super::env_value(Some("s.tok\n".into())).as_deref(),
+            Some("s.tok")
+        );
+        assert_eq!(super::env_value(Some("  ".into())), None);
+        assert_eq!(super::env_value(None), None);
+    }
 
     #[test]
     fn old_vault_passwords_become_explicit_modes() {

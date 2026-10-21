@@ -61,6 +61,12 @@ impl Driver {
             {
                 format!("({name} = {} OR {name} = {v})", self.literal(v))
             }
+            // an infinite REAL reads as inf: 9e999 is that number again
+            Some(v @ ("inf" | "-inf")) if self == Driver::Sqlite => format!(
+                "({name} = {} OR {name} = {}9e999)",
+                self.literal(v),
+                if v.starts_with('-') { "-" } else { "" }
+            ),
             Some(v) => format!("{name} = {}", self.literal(v)),
         }
     }
@@ -2715,6 +2721,20 @@ mod tests {
                 vec!["it's".into(), "NULL".into()],
                 vec!["new".into(), "NULL".into()]
             ]
+        );
+        // an infinite REAL shows as inf: its row is still found
+        s.query("CREATE TABLE fi(r REAL PRIMARY KEY, v); INSERT INTO fi VALUES (1e999, 'a'), ('inf', 'b')").unwrap();
+        let w = Driver::Sqlite.equals("\"r\"", Some("inf"));
+        assert_eq!(
+            texts(
+                &s.query(&format!(
+                    "SELECT v FROM fi WHERE {w} AND typeof(r) = 'real'"
+                ))
+                .unwrap()
+                .rows
+            ),
+            [["a"]],
+            "{w}"
         );
         // A filter by value finds a number in a column without a type (5 is not '5' there).
         s.query("CREATE TABLE u5(v); INSERT INTO u5 VALUES (5)")

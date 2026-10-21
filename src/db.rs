@@ -1212,9 +1212,9 @@ fn pg_err(e: postgres::Error) -> String {
 fn mysql_query(c: &mut mysql::Conn, sql: &str) -> Result<Vec<QueryResult>, String> {
     use mysql::Value as V;
     use mysql::prelude::Queryable;
-    // a script with a CALL: its trailing OK packet is dropped below (not an UPDATE that
-    // matched nothing, which is a result of its own)
-    let calls = statement_heads(sql, true).iter().any(|(w, _)| w == "CALL");
+    // a script of CALLs: their trailing OK packets are dropped below. In a mixed script an
+    // UPDATE that matched nothing looks the same, and is a result of its own: kept there.
+    let calls = statement_heads(sql, true).iter().all(|(w, _)| w == "CALL");
     let mut out = vec![];
     let mut result = c.query_iter(sql).map_err(|e| e.to_string())?;
     while let Some(set) = result.iter() {

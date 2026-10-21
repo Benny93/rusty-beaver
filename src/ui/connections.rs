@@ -493,6 +493,9 @@ impl AppView {
                     .map(|i| v.conns[i].cfg.driver)
                     .unwrap_or(Driver::Sqlite);
                 let out = r.and_then(|cols| {
+                    if cols.rows.is_empty() {
+                        return Err(format!("no table {table:?}")); // SELECT FROM "usres"
+                    }
                     let cols: Vec<(String, bool)> = cols
                         .rows
                         .iter()
@@ -658,6 +661,14 @@ impl AppView {
             window,
             cx,
             Box::new(move |v, r, window, cx| {
+                // the catalog answers an unknown name with no columns, not an error
+                let r = r.and_then(|cols: QueryResult| {
+                    if cols.rows.is_empty() {
+                        Err(format!("no table {table:?}"))
+                    } else {
+                        Ok(cols)
+                    }
+                });
                 let out = r.map(|cols| {
                     let j = result_json(&cols, usize::MAX);
                     if let Some(ix) = v.conn_ix(id) {

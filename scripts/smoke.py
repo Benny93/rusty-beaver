@@ -65,6 +65,8 @@ def main():
             assert tables == ["beavers", "leaderboard", "lodges", "missions"], tables
             cols = call("describe_table", {"connection": DB, "table": "missions"})["rows"]
             assert ["leader_id", "INTEGER", "YES", "FK", "beavers.id"] in cols, cols
+            assert "no table" in call("describe_table", {"connection": DB, "table": "usres"}, ok=False)
+            assert "no table" in call("generate_sql", {"connection": DB, "table": "usres", "kind": "select"}, ok=False)
 
         def sql_editor():
             r = call("run_sql", {"connection": DB, "sql": "SELECT name FROM beavers ORDER BY logs_chewed DESC"})

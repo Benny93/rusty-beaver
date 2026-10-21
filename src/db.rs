@@ -1388,6 +1388,9 @@ pub fn save_connections(list: &[ConnConfig]) -> Result<Vec<String>, String> {
         .map(|c| {
             let mut f = c.clone();
             f.keychain = false;
+            if c.auth != Auth::Password {
+                f.password.clear(); // Vault gives it on connect: nothing is kept locally
+            }
             let secret = c.auth == Auth::Password && !c.password.is_empty();
             if secrets::enabled() && secret {
                 let stored = keychain_has(&c.id, Some(&c.password)) || secrets::store(&c.id, &c.password).inspect(|_| keychain_note(&c.id, Some(&c.password))).inspect_err(|e| warnings.push(format!("{}: the system keychain is not available ({e}); its password stays in connections.json", c.name))).is_ok();
@@ -2654,6 +2657,8 @@ mod tests {
                 driver: Driver::Postgres,
                 auth: Auth::VaultDynamic,
                 vault_path: "database/creds/ro".into(),
+                // left from before the switch to Vault (MCP edit_connection keeps it)
+                password: "old-pw".into(),
                 ..Default::default()
             },
             ConnConfig {
@@ -2665,6 +2670,10 @@ mod tests {
         assert!(save_connections(&list).unwrap().is_empty());
         let raw = std::fs::read_to_string(&file).unwrap();
         assert!(!raw.contains("s3cret"), "the password is not in the file");
+        assert!(
+            !raw.contains("old-pw"),
+            "nothing of a Vault connection is kept locally"
+        );
         assert!(
             raw.contains("database/creds/ro") && raw.contains("vault_dynamic"),
             "Vault paths are no secrets"

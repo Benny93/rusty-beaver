@@ -304,6 +304,7 @@ impl AppView {
                             j["results"] = json!(earlier.iter().chain([&res]).enumerate().map(|(i, r)| json!({ "index": i, "columns": r.columns, "row_count": r.rows.len(), "affected": r.affected })).collect::<Vec<_>>());
                         }
                         earlier.push(res.clone());
+                        t.editing = None; // an edit begun on the old rows
                         t.results = earlier;
                         t.result_ix = n_results - 1;
                         t.grid.update(cx, |g, cx| {

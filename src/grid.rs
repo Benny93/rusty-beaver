@@ -33,19 +33,18 @@ impl Grid {
     /// Show only rows containing `text` (case-insensitive); empty shows all. Keeps the sort.
     pub fn set_search(&mut self, text: &str) {
         self.search = text.trim().to_lowercase();
-        let mut sorted: Vec<usize> = self.order.clone();
-        // rows hidden by an earlier search come back in their original position
-        let hidden: Vec<usize> = (0..self.r.rows.len())
-            .filter(|id| !sorted.contains(id))
-            .collect();
-        sorted.extend(hidden);
-        sorted.sort_by_key(|id| {
-            self.order
-                .iter()
-                .position(|x| x == id)
-                .unwrap_or(usize::MAX - (self.r.rows.len() - id))
-        });
-        self.order = sorted.into_iter().filter(|&id| self.matches(id)).collect();
+        // Shown rows keep their place; rows hidden by an earlier search follow in their
+        // original order. A position table: 10,000 rows per keystroke stay instant.
+        let n = self.r.rows.len();
+        let mut pos = vec![usize::MAX; n];
+        for (p, &id) in self.order.iter().enumerate() {
+            if let Some(slot) = pos.get_mut(id) {
+                *slot = p;
+            }
+        }
+        let mut all: Vec<usize> = (0..n).collect();
+        all.sort_by_key(|&id| (pos[id], id));
+        self.order = all.into_iter().filter(|&id| self.matches(id)).collect();
     }
 
     fn matches(&self, id: usize) -> bool {
@@ -178,8 +177,11 @@ pub fn column_stats(g: &Grid, col: usize) -> Vec<(&'static str, String)> {
     let fmt = |x: f64| {
         if x.fract() == 0. && x.abs() < 1e15 {
             format!("{}", x as i64)
+        } else if x.abs() >= 1e15 || x.abs() < 1e-4 {
+            format!("{x}") // with 4 decimals 0.00004 would show as "0."
         } else {
-            format!("{x:.4}").trim_end_matches('0').to_string()
+            let s = format!("{x:.4}");
+            s.trim_end_matches('0').trim_end_matches('.').to_string()
         }
     };
     if !nums.is_empty() && nums.len() == present.len() {

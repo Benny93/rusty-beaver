@@ -34,6 +34,25 @@ impl AppView {
     ) -> Result<Option<String>, String> {
         let ix = self.active;
         let t = self.tabs.get(ix).ok_or("no tab open")?;
+        // While it loads or saves, rows are about to be replaced: a change now would land on
+        // the wrong row, and a second Save would run the same statements again.
+        let changes = matches!(
+            op,
+            GridOp::EditCell
+                | GridOp::SetNull
+                | GridOp::DeleteRow
+                | GridOp::AddRow
+                | GridOp::DuplicateRow
+                | GridOp::Save
+                | GridOp::Revert
+        );
+        if changes && t.running {
+            let e = "wait until it has loaded or saved".to_string();
+            if op == GridOp::Save {
+                done(self, Err(e.clone()), window, cx);
+            }
+            return Err(e);
+        }
         let table = match &t.kind {
             TabKind::Table(n) => Some(n.clone()),
             _ => None,

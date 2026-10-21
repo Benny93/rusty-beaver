@@ -371,7 +371,7 @@ impl AppView {
 
     pub(super) fn history_list(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let t = cx.theme().clone();
-        let q = self.side_filter.read(cx).value().to_lowercase();
+        let q = self.side_filter.read(cx).value().trim().to_lowercase(); // as the table filter
         let now_s = history::now();
         self.history
             .iter()

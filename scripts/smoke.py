@@ -70,6 +70,11 @@ def main():
             typo = os.path.join(tmp, "typo.db")
             call("test_connection", {"name": "t", "driver": "sqlite", "database": typo}, ok=False)
             assert not os.path.exists(typo)
+            # completion on a connection not connected yet still knows its tables
+            call("add_connection", {"name": "Fresh", "driver": "sqlite", "database": db})
+            labels = [c["label"] for c in call("sql_completions", {"connection": "Fresh", "sql": "SELECT * FROM bea"})]
+            assert "beavers" in labels, labels
+            call("delete_connection", {"connection": "Fresh"})
             # an id taken by another connection (its keychain entry) is not reused
             taken = json.load(open(cfg))[0]["id"]
             call("add_connection", {"name": "Dup Id", "driver": "sqlite", "database": db, "id": taken})

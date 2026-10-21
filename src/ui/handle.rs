@@ -772,16 +772,30 @@ impl AppView {
                     done,
                 )
             }
-            "sql_completions" => {
-                let r = self.conn_by_name(&s("connection")).map(|id| {
+            "sql_completions" => match self.conn_by_name(&s("connection")) {
+                Err(e) => now(self, Err(e), window, cx, done),
+                // connected first: before, the catalog is empty and only keywords come back
+                Ok(id) => {
                     let sql = s("sql");
-                    let offset = a["offset"].as_u64().map(|o| o as usize).unwrap_or(sql.len());
-                    let cat = self.conns[self.conn_ix(id).unwrap_or(0)].catalog.clone();
-                    let (_, items) = crate::complete::suggest(&sql, offset, &cat.lock().unwrap());
-                    json!(items.iter().take(30).map(|i| json!({ "label": i.label, "kind": format!("{:?}", i.kind).to_lowercase(), "detail": i.detail })).collect::<Vec<_>>())
-                });
-                now(self, r, window, cx, done)
-            }
+                    let offset = a["offset"]
+                        .as_u64()
+                        .map(|o| o as usize)
+                        .unwrap_or(sql.len());
+                    self.connect(
+                        id,
+                        window,
+                        cx,
+                        Box::new(move |v, r, w, cx| {
+                            let r = r.map(|_| {
+                                let cat = v.conn_ix(id).map(|i| v.conns[i].catalog.clone()).unwrap_or_default();
+                                let (_, items) = crate::complete::suggest(&sql, offset, &cat.lock().unwrap());
+                                json!(items.iter().take(30).map(|i| json!({ "label": i.label, "kind": format!("{:?}", i.kind).to_lowercase(), "detail": i.detail })).collect::<Vec<_>>())
+                            });
+                            done(v, r, w, cx)
+                        }),
+                    )
+                }
+            },
             "export_csv" => {
                 let r = self
                     .export_csv(std::path::Path::new(&s("path")), None, cx)

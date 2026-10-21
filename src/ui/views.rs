@@ -9,7 +9,7 @@ impl AppView {
         let t = cx.theme().clone();
         let tab = &self.tabs[ix];
         let g = tab.grid.read(cx).delegate();
-        let (label, numeric) = crate::grid::chart_columns(&g.r);
+        let (label, numeric) = crate::grid::chart_columns(&g.shown()); // edits applied, deleted and searched-out rows left out
         let Some(value) = tab
             .chart_col
             .filter(|c| numeric.contains(c))

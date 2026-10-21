@@ -432,7 +432,7 @@ impl AppView {
                     Some(t) => {
                         t.chart = a["on"].as_bool().unwrap_or(true);
                         let g = t.grid.read(cx).delegate();
-                        let (label, numeric) = crate::grid::chart_columns(&g.r);
+                        let (label, numeric) = crate::grid::chart_columns(&g.shown()); // edits applied, deleted and searched-out rows left out
                         t.chart_col = None; // no column: the first numeric one
                         if let Some(name) = a["column"].as_str() {
                             let Some(c) =

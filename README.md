@@ -96,7 +96,7 @@ Mod is Cmd on macOS and Ctrl elsewhere. F1 shows this list in the app.
 | Keys | Action |
 | --- | --- |
 | Mod+Enter | Execute the statement at the cursor (or the selection) |
-| Mod+Shift+Enter, Alt+X | Execute the whole script |
+| Mod+Shift+Enter (Alt+X on Linux/Windows) | Execute the whole script |
 | Mod+. | Cancel the running query |
 | Mod+Shift+E / Mod+Shift+F | Explain plan / Format SQL |
 | Mod+T / Mod+N / Mod+W | New SQL editor / New connection / Close tab |

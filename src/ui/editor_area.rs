@@ -162,7 +162,7 @@ impl AppView {
                             .icon(IconName::X)
                             .on_click(cx.listener(move |v, _, _, cx| {
                                 cx.stop_propagation();
-                                v.close_tab(i, cx)
+                                let _ = v.close_tab(i, cx);
                             })),
                     )
             }))

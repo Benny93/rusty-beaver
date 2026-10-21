@@ -36,6 +36,13 @@ impl AppView {
             std::mem::take(&mut t.agent),
             std::mem::take(&mut t.params_given),
         );
+        if matches!(t.kind, TabKind::Table(_)) && !t.grid.read(cx).delegate().changes.is_empty() {
+            // its result replaces the rows, and with them the unsaved edits
+            let e = "save or revert the pending changes first".to_string();
+            self.status = e.clone();
+            cx.notify();
+            return done(self, Err(e), window, cx);
+        }
         if t.running {
             // it would wait for the lock, and the first one's end would clear `running`
             let e = "a query is already running in this tab: wait or cancel it".to_string();

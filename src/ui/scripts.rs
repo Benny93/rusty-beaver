@@ -29,8 +29,13 @@ impl AppView {
     }
 
     /// Close every tab, or every tab but the active one.
-    pub(super) fn close_tabs(&mut self, keep_active: bool, cx: &mut Context<Self>) {
+    pub(super) fn close_tabs(
+        &mut self,
+        keep_active: bool,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
         let keep = keep_active.then_some(self.active);
+        self.unsaved_edits((0..self.tabs.len()).filter(|&i| Some(i) != keep), cx)?;
         let mut i = 0;
         self.tabs.retain(|_| {
             let k = Some(i) == keep;
@@ -40,6 +45,7 @@ impl AppView {
         self.active = 0;
         self.save_session_soon(cx);
         cx.notify();
+        Ok(())
     }
 
     pub(super) fn select_tab_ix(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {

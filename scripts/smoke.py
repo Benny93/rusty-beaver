@@ -95,6 +95,8 @@ def main():
             assert call("set_filter", {"filter": "river = 'Elbe'"})["row_count"] == 1
             call("edit_cell", {"row": 0, "column": "river", "value": "Rhine"})
             assert "pending changes" in call("set_filter", {"filter": ""}, ok=False)  # edit kept
+            active = [t["index"] for t in call("get_state")["tabs"] if t["active"]][0]
+            assert "pending changes" in call("close_tab", {"index": active}, ok=False)
             call("revert_changes")
             call("explain")  # the plan opens in a script tab, not in the editable table grid
             active = [t for t in call("get_state")["tabs"] if t["active"]]

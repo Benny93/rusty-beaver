@@ -177,11 +177,12 @@ impl AppView {
                     Err(format!("no tab {i}; {} open", self.tabs.len()))
                 } else {
                     if call.name == "select_tab" {
-                        self.select_tab_ix(i, window, cx)
+                        self.select_tab_ix(i, window, cx);
+                        Ok(())
                     } else {
                         self.close_tab(i, cx)
                     }
-                    Ok(json!({ "active": self.active, "tabs": self.tabs.len() }))
+                    .map(|_| json!({ "active": self.active, "tabs": self.tabs.len() }))
                 };
                 now(self, r, window, cx, done)
             }
@@ -484,14 +485,10 @@ impl AppView {
                 Err(e) => now(self, Err(e), window, cx, done),
             },
             "close_all_tabs" => {
-                self.close_tabs(a["keep_active"].as_bool().unwrap_or(false), cx);
-                now(
-                    self,
-                    Ok(json!({ "tabs": self.tabs.len() })),
-                    window,
-                    cx,
-                    done,
-                )
+                let r = self
+                    .close_tabs(a["keep_active"].as_bool().unwrap_or(false), cx)
+                    .map(|_| json!({ "tabs": self.tabs.len() }));
+                now(self, r, window, cx, done)
             }
             "search_results" => {
                 let r = match self.tabs.get(self.active) {

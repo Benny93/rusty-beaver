@@ -153,15 +153,6 @@ pub fn run(mcp_port: u16) {
                 KeyBinding::new("cmd-7", Tab7, None),
                 KeyBinding::new("cmd-8", Tab8, None),
                 KeyBinding::new("cmd-9", Tab9, None),
-                KeyBinding::new("alt-1", Tab1, None),
-                KeyBinding::new("alt-2", Tab2, None),
-                KeyBinding::new("alt-3", Tab3, None),
-                KeyBinding::new("alt-4", Tab4, None),
-                KeyBinding::new("alt-5", Tab5, None),
-                KeyBinding::new("alt-6", Tab6, None),
-                KeyBinding::new("alt-7", Tab7, None),
-                KeyBinding::new("alt-8", Tab8, None),
-                KeyBinding::new("alt-9", Tab9, None),
                 KeyBinding::new("ctrl-/", ToggleComment, None),
                 KeyBinding::new("cmd-o", OpenScript, None),
                 KeyBinding::new("ctrl-o", OpenScript, None),
@@ -172,7 +163,6 @@ pub fn run(mcp_port: u16) {
                 KeyBinding::new("cmd-shift-f", FormatSql, None),
                 KeyBinding::new("ctrl-shift-f", FormatSql, None),
                 KeyBinding::new("ctrl-shift-enter", RunScript, None),
-                KeyBinding::new("alt-x", RunScript, None),
                 KeyBinding::new("cmd-.", CancelQuery, None),
                 KeyBinding::new("ctrl-.", CancelQuery, None),
                 KeyBinding::new("cmd-t", NewEditor, None),
@@ -192,6 +182,20 @@ pub fn run(mcp_port: u16) {
                 KeyBinding::new("cmd-s", SaveChanges, None),
                 KeyBinding::new("ctrl-s", SaveChanges, None),
                 KeyBinding::new("escape", CancelEdit, Some("CellEdit")),
+            ]);
+            // Not on macOS: Option+digit types characters there ([ ] | { } on a German layout).
+            #[cfg(not(target_os = "macos"))]
+            cx.bind_keys([
+                KeyBinding::new("alt-1", Tab1, None),
+                KeyBinding::new("alt-2", Tab2, None),
+                KeyBinding::new("alt-3", Tab3, None),
+                KeyBinding::new("alt-4", Tab4, None),
+                KeyBinding::new("alt-5", Tab5, None),
+                KeyBinding::new("alt-6", Tab6, None),
+                KeyBinding::new("alt-7", Tab7, None),
+                KeyBinding::new("alt-8", Tab8, None),
+                KeyBinding::new("alt-9", Tab9, None),
+                KeyBinding::new("alt-x", RunScript, None),
             ]);
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.set_menus([
@@ -883,7 +887,9 @@ impl AppView {
         cx.notify();
     }
 
-    fn close_tab(&mut self, i: usize, cx: &mut Context<Self>) {
+    /// Refused (with the reason in the status bar) for a tab with unsaved grid edits.
+    fn close_tab(&mut self, i: usize, cx: &mut Context<Self>) -> Result<(), String> {
+        self.unsaved_edits([i], cx)?;
         if i < self.tabs.len() {
             self.save_session_soon(cx);
             self.tabs.remove(i);
@@ -893,6 +899,26 @@ impl AppView {
             }
             cx.notify();
         }
+        Ok(())
+    }
+
+    /// Err (also in the status bar) when one of these tabs has unsaved grid edits.
+    fn unsaved_edits(
+        &mut self,
+        tabs: impl IntoIterator<Item = usize>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
+        for i in tabs {
+            if let Some(t) = self.tabs.get(i)
+                && !t.grid.read(cx).delegate().changes.is_empty()
+            {
+                let e = format!("{}: save or revert the pending changes first", t.title);
+                self.status = e.clone();
+                cx.notify();
+                return Err(e);
+            }
+        }
+        Ok(())
     }
 
     fn new_editor(
@@ -1108,7 +1134,10 @@ const SHORTCUTS: &[(&str, &str)] = &[
         "Mod+Enter",
         "Execute the statement at the cursor (or the selection)",
     ),
-    ("Mod+Shift+Enter / Alt+X", "Execute the whole script"),
+    (
+        "Mod+Shift+Enter (Alt+X on Linux/Windows)",
+        "Execute the whole script",
+    ),
     ("Mod+.", "Cancel the running query"),
     ("Mod+Shift+E", "Explain plan"),
     ("Mod+Shift+F", "Format SQL"),
@@ -1125,7 +1154,10 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Mod+C / Mod+Shift+C", "Copy value / row"),
     ("Right-click", "Grid, table and connection menus"),
     ("Mod+/", "Comment / uncomment lines"),
-    ("Cmd+1 … 9 / Alt+1 … 9", "Switch to tab 1 … 9"),
+    (
+        "Cmd+1 … 9 (Alt+1 … 9 on Linux/Windows)",
+        "Switch to tab 1 … 9",
+    ),
     ("F1 / Mod+Shift+/", "This overview"),
 ];
 
@@ -1212,7 +1244,9 @@ impl Render for AppView {
                 }
             }))
             .on_action(cx.listener(|v, _: &NewConnection, w, cx| v.open_dialog(None, w, cx)))
-            .on_action(cx.listener(|v, _: &CloseTab, _, cx| v.close_tab(v.active, cx)))
+            .on_action(cx.listener(|v, _: &CloseTab, _, cx| {
+                let _ = v.close_tab(v.active, cx);
+            }))
             .on_action(cx.listener(|v, _: &ToggleTheme, w, cx| v.set_theme(!v.dark, w, cx)))
             .on_action(cx.listener(|v, _: &CopyValue, w, cx| v.report(GridOp::CopyValue, w, cx)))
             .on_action(cx.listener(|v, _: &CopyRow, w, cx| v.report(GridOp::CopyRow, w, cx)))
@@ -1249,8 +1283,12 @@ impl Render for AppView {
                 cx.listener(|v, _: &CopyColumnInList, w, cx| v.report(GridOp::CopyColumnIn, w, cx)),
             )
             .on_action(cx.listener(|v, _: &FollowSystemTheme, w, cx| v.follow_system_theme(w, cx)))
-            .on_action(cx.listener(|v, _: &CloseOtherTabs, _, cx| v.close_tabs(true, cx)))
-            .on_action(cx.listener(|v, _: &CloseAllTabs, _, cx| v.close_tabs(false, cx)))
+            .on_action(cx.listener(|v, _: &CloseOtherTabs, _, cx| {
+                let _ = v.close_tabs(true, cx);
+            }))
+            .on_action(cx.listener(|v, _: &CloseAllTabs, _, cx| {
+                let _ = v.close_tabs(false, cx);
+            }))
             .on_action(
                 cx.listener(|v, _: &OpenReferencedRow, w, cx| v.report(GridOp::FollowFk, w, cx)),
             )

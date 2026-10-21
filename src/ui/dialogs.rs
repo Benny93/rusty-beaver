@@ -713,7 +713,7 @@ impl AppView {
                                             cx.spawn_in(w, async move |this, cx| {
                                                 let r = cx
                                                     .background_spawn(async move {
-                                                        db::connect(&cfg)
+                                                        db::test_connect(&cfg)
                                                             .and_then(|mut s| s.tables())
                                                             .map(|t| {
                                                                 format!(

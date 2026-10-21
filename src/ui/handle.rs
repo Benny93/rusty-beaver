@@ -512,7 +512,7 @@ impl AppView {
                         cx.spawn_in(window, async move |this, cx| {
                             let r = cx
                                 .background_spawn(async move {
-                                    let mut s = db::connect(&cfg)?;
+                                    let mut s = db::test_connect(&cfg)?;
                                     let tables = s.tables()?.len();
                                     Ok::<_, String>(json!({ "ok": true, "server": s.server_version(), "tables": tables }))
                                 })

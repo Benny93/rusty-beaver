@@ -448,14 +448,9 @@ pub fn connect(c: &ConnConfig) -> Result<Session, String> {
     let c = &crate::vault::resolve(c, &crate::vault::open_browser)?;
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let mut s = match c.driver {
-        Driver::Sqlite => {
-            // ~/data/app.db: the shell would expand it, SQLite does not
-            let path = match c.database.strip_prefix("~/") {
-                Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
-                None => PathBuf::from(&c.database),
-            };
-            Session::Sqlite(rusqlite::Connection::open(&path).map_err(|x| e(&x))?)
-        }
+        Driver::Sqlite => Session::Sqlite(
+            rusqlite::Connection::open(sqlite_path(&c.database)).map_err(|x| e(&x))?,
+        ),
         Driver::Postgres => Session::Postgres(
             pg_config(c)
                 .connect(pg_tls(c.ssl == Ssl::VerifyFull)?)
@@ -507,6 +502,27 @@ pub fn connect(c: &ConnConfig) -> Result<Session, String> {
         })?;
     }
     Ok(s)
+}
+
+/// A SQLite database path: ~/data/app.db is in the home folder (the shell would expand it,
+/// SQLite does not).
+fn sqlite_path(database: &str) -> PathBuf {
+    match database.strip_prefix("~/") {
+        Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+        None => PathBuf::from(database),
+    }
+}
+
+/// `connect` for Test Connection: a SQLite file that is not there is an error, not a new
+/// empty database (a typo would leave one behind and report success).
+pub fn test_connect(c: &ConnConfig) -> Result<Session, String> {
+    if c.driver == Driver::Sqlite && c.database != ":memory:" {
+        let path = sqlite_path(&c.database);
+        if !path.exists() {
+            return Err(format!("{}: no such file", path.display()));
+        }
+    }
+    connect(c)
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]

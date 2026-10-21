@@ -66,6 +66,10 @@ def main():
             cols = call("describe_table", {"connection": DB, "table": "missions"})["rows"]
             assert ["leader_id", "INTEGER", "YES", "FK", "beavers.id"] in cols, cols
             assert "no table" in call("describe_table", {"connection": DB, "table": "usres"}, ok=False)
+            # testing settings creates no database file
+            typo = os.path.join(tmp, "typo.db")
+            call("test_connection", {"name": "t", "driver": "sqlite", "database": typo}, ok=False)
+            assert not os.path.exists(typo)
             # an id taken by another connection (its keychain entry) is not reused
             taken = json.load(open(cfg))[0]["id"]
             call("add_connection", {"name": "Dup Id", "driver": "sqlite", "database": db, "id": taken})

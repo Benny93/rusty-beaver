@@ -134,6 +134,24 @@ fn lex(sql: &str) -> Vec<Tok<'_>> {
                 i += 1;
                 out.push(Tok::Raw(&sql[start..i.min(b.len())]));
             }
+            // :name parameters and $1 placeholders stay one piece (not ": name", "$ 1")
+            b':' if b
+                .get(i + 1)
+                .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_') =>
+            {
+                i += 1;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                out.push(Tok::Raw(&sql[start..i]));
+            }
+            b'$' if b.get(i + 1).is_some_and(u8::is_ascii_digit) => {
+                i += 1;
+                while i < b.len() && b[i].is_ascii_digit() {
+                    i += 1;
+                }
+                out.push(Tok::Raw(&sql[start..i]));
+            }
             b'$' if crate::db::dollar_quote_end(sql, i).is_some() => {
                 i = crate::db::dollar_quote_end(sql, i).unwrap_or(b.len());
                 out.push(Tok::Raw(&sql[start..i]));
@@ -185,14 +203,41 @@ fn lex(sql: &str) -> Vec<Tok<'_>> {
                         i += 1;
                     }
                 }
+                // E'…', N'…', X'…', B'…': the prefix belongs to its string
+                if i == start + 1 && b"EeNnXxBb".contains(&c) && b.get(i) == Some(&b'\'') {
+                    i += 1;
+                    while i < b.len() && (b[i] != b'\'' || b.get(i + 1) == Some(&b'\'')) {
+                        i += if b[i] == b'\'' || c.eq_ignore_ascii_case(&b'e') && b[i] == b'\\' {
+                            2
+                        } else {
+                            1
+                        };
+                    }
+                    i = (i + 1).min(b.len());
+                    out.push(Tok::Raw(&sql[start..i]));
+                    continue;
+                }
                 out.push(Tok::Word(&sql[start..i]));
             }
             _ => {
                 // operators: one run of punctuation
+                // where another token starts: a parameter, a comment, a dollar quote
+                let starts = |i: usize| {
+                    let next = b.get(i + 1);
+                    b[i] == b':'
+                        && b[i - 1] != b':'
+                        && next.is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
+                        || b[i] == b'$' && next.is_some_and(u8::is_ascii_digit)
+                        || b[i] == b'-' && next == Some(&b'-')
+                        || b[i] == b'/' && next == Some(&b'*')
+                        || b[i] == b'$' && crate::db::dollar_quote_end(sql, i).is_some()
+                };
                 while i < b.len()
                     && !b[i].is_ascii_alphanumeric()
                     && !b[i].is_ascii_whitespace()
                     && !b"'\"`,();_".contains(&b[i])
+                    && !(i > start && starts(i))
+                // a=:id, a=$1, a=--x
                 {
                     i += 1;
                 }
@@ -351,6 +396,11 @@ mod tests {
         assert!(out.contains("'it''s'"), "{out}");
         assert!(out.contains("$$a, b$$"), "{out}");
         assert!(out.contains("1.5e-3"), "{out}");
+        let out = format_sql("select * from t where a=:id and b=$1 and c = E'it\\'s' -- x\n");
+        for kept in [":id", "$1", "E'it\\'s'"] {
+            assert!(out.contains(kept), "{kept} in {out}");
+        }
+        assert!(!out.contains(": id") && !out.contains("$ 1"), "{out}");
         // non-breaking space indent: no slicing inside a character
         assert!(toggle_comment("\u{a0}x\n y", 0..5).contains("-- "));
     }

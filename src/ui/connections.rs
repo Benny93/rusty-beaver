@@ -451,8 +451,14 @@ impl AppView {
                         // a selected table that is gone is selected no more
                         if let Some((sel, t)) = &mut v.selected
                             && *sel == id
-                            && t.as_ref()
-                                .is_some_and(|t| !tables.iter().any(|(n, _)| n == t))
+                            // as it was given: BEAVERS for beavers, users for public.users
+                            && t.as_ref().is_some_and(|t| {
+                                let t = t.to_lowercase();
+                                !tables.iter().any(|(n, _)| {
+                                    let n = n.to_lowercase();
+                                    n == t || n.ends_with(&format!(".{t}"))
+                                })
+                            })
                         {
                             *t = None;
                         }

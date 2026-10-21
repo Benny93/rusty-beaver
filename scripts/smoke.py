@@ -177,6 +177,10 @@ def main():
             call("run_sql", {"connection": DB, "sql": "DROP TABLE gone"})
             call("refresh_connection", {"connection": DB})
             assert call("get_state")["selected"]["table"] is None  # not a table that is gone
+            # …but one named in another case still is there
+            call("describe_table", {"connection": DB, "table": "BEAVERS"})
+            call("refresh_connection", {"connection": DB})
+            assert call("get_state")["selected"]["table"] == "BEAVERS"
             time.sleep(0.5)
             assert "zap_col" not in done(), done()
 

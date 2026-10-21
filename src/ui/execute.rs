@@ -746,6 +746,7 @@ impl AppView {
             r.rows = r.rows.into_iter().map(pick).collect();
         }
         let r = &r;
+
         let driver = self
             .conn_ix(t.conn)
             .map(|i| self.conns[i].cfg.driver)
@@ -754,7 +755,24 @@ impl AppView {
             TabKind::Table(n) => n.as_str(),
             _ => "table_name",
         };
-        Ok((db::export(r, ext, driver, table), r.rows.len()))
+        // Postgres takes values for GENERATED ALWAYS identity columns only when told so
+        let identity = ext.eq_ignore_ascii_case("sql")
+            && driver == Driver::Postgres
+            && matches!(t.kind, TabKind::Table(_))
+            && t.columns.read(cx).delegate().r.rows.iter().any(|k| {
+                db::text(&k[5]) == "identity" && r.columns.iter().any(|c| c == db::text(&k[0]))
+            });
+        let mut text = db::export(r, ext, driver, table);
+        if identity {
+            text = text
+                .split_inclusive('\n')
+                .map(|l| match l.starts_with("INSERT INTO ") {
+                    true => l.replacen(") VALUES (", ") OVERRIDING SYSTEM VALUE VALUES (", 1),
+                    false => l.to_string(),
+                })
+                .collect();
+        }
+        Ok((text, r.rows.len()))
     }
 
     /// Export the active grid; the format follows the file extension (csv, tsv, json, md, sql).

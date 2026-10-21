@@ -81,6 +81,7 @@ def main():
             assert r["rows"] == [["2"]], r
             assert call("format_sql", {"sql": "select a from t where b = 1"})["sql"].startswith("SELECT\n    a\nFROM t")
             assert call("explain", {"sql": "SELECT * FROM beavers WHERE id = 1"})["row_count"] >= 1
+            assert "one statement" in call("explain", {"sql": "SELECT 1; DELETE FROM missions"}, ok=False)
             labels = [c["label"] for c in call("sql_completions", {"connection": DB, "sql": "SELECT b. FROM beavers b", "offset": 9})]
             assert "logs_chewed" in labels, labels
 

@@ -417,7 +417,17 @@ impl AppView {
         } else {
             "EXPLAIN "
         };
-        let sql = format!("{prefix}{}", sql.trim().trim_end_matches(';'));
+        // EXPLAIN a; b would run b: one statement only
+        let one = sql.trim().trim_end_matches(';');
+        if db::statement_at(one, 0, driver == Driver::Mysql).end < one.trim_end().len() {
+            return done(
+                self,
+                Err("explain one statement at a time".into()),
+                window,
+                cx,
+            );
+        }
+        let sql = format!("{prefix}{one}");
         self.run(tab, Source::Raw(sql), 200, window, cx, done);
     }
 

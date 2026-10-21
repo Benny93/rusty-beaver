@@ -156,7 +156,9 @@ fn lex(sql: &str) -> Vec<Tok<'_>> {
                 i = crate::db::dollar_quote_end(sql, i).unwrap_or(b.len());
                 out.push(Tok::Raw(&sql[start..i]));
             }
-            b'-' if b.get(i + 1) == Some(&b'-') => {
+            // MySQL # comments too; on Postgres (#> and #- operators) the rest of the line is
+            // only kept as it is
+            b'#' | b'-' if c == b'#' || b.get(i + 1) == Some(&b'-') => {
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
                 }
@@ -300,8 +302,8 @@ pub fn format_sql(sql: &str) -> String {
             }
             Tok::Raw(r) => {
                 out.push_str(r);
-                if r.starts_with("--") {
-                    out.push('\n');
+                if r.starts_with("--") || r.starts_with('#') {
+                    out.push('\n'); // a line comment ends its line
                 } else {
                     out.push(' ');
                 }
@@ -397,6 +399,8 @@ mod tests {
         assert!(out.contains("$$a, b$$"), "{out}");
         assert!(out.contains("1.5e-3"), "{out}");
         let out = format_sql("select * from t where a=:id and b=$1 and c = E'it\\'s' -- x\n");
+        let my = format_sql("select a # note\n+ 1 from t");
+        assert!(my.contains("# note\n"), "{my}"); // + 1 stays out of the MySQL comment
         for kept in [":id", "$1", "E'it\\'s'"] {
             assert!(out.contains(kept), "{kept} in {out}");
         }

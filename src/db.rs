@@ -130,7 +130,9 @@ impl Driver {
                 "SELECT name, upper(type) FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name"
             }
             Driver::Postgres => {
-                "SELECT table_schema || '.' || table_name, CASE table_type WHEN 'BASE TABLE' THEN 'TABLE' ELSE table_type END FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema') ORDER BY 1"
+                // materialized views are not in information_schema
+                "SELECT table_schema || '.' || table_name, CASE table_type WHEN 'BASE TABLE' THEN 'TABLE' ELSE table_type END FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema') \
+                 UNION ALL SELECT schemaname || '.' || matviewname, 'MATERIALIZED VIEW' FROM pg_matviews ORDER BY 1"
             }
             Driver::Mysql => {
                 "SELECT table_name, CASE table_type WHEN 'BASE TABLE' THEN 'TABLE' ELSE table_type END FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY 1"
@@ -869,7 +871,17 @@ impl Session {
     /// Columns of a table: name, type, nullable, key.
     /// Columns of a table: name, type, nullable, key, and what a foreign key references.
     pub fn columns(&mut self, table: &str) -> Result<QueryResult, String> {
-        let mut r = self.query(&self.driver().columns_sql(table))?;
+        let driver = self.driver();
+        let mut r = self.query(&driver.columns_sql(table))?;
+        if r.rows.is_empty() && driver == Driver::Postgres {
+            // a materialized view: not in information_schema.columns
+            r = self.query(&format!(
+                "SELECT a.attname, format_type(a.atttypid, a.atttypmod), CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, '' \
+                 FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid \
+                 WHERE c.oid = to_regclass({}) AND c.relkind = 'm' AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum",
+                driver.literal(&driver.table_ref(table))
+            ))?;
+        }
         r.columns = ["Column", "Type", "Nullable", "Key", "References"]
             .map(String::from)
             .to_vec();
@@ -910,7 +922,7 @@ impl Session {
         let shown = self
             .tables()?
             .into_iter()
-            .filter(|(_, kind)| kind != "VIEW");
+            .filter(|(_, kind)| !kind.ends_with("VIEW"));
         for (name, _) in shown.take(limit) {
             let cols = self.query(&self.driver().columns_sql(&name))?;
             let columns = cols

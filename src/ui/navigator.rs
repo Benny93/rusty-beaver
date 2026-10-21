@@ -172,7 +172,7 @@ impl AppView {
                             .size_3(),
                         )
                         .child(
-                            Icon::new(if kind == "VIEW" {
+                            Icon::new(if kind.ends_with("VIEW") {
                                 IconName::Eye
                             } else {
                                 IconName::Table

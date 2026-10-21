@@ -341,11 +341,26 @@ impl AppView {
             return done(self, Err("no transaction is open".into()), window, cx);
         }
         let sql = if commit { "COMMIT" } else { "ROLLBACK" };
+        let pg = self
+            .conn_ix(id)
+            .is_some_and(|i| self.conns[i].cfg.driver == Driver::Postgres);
         // no retry: a COMMIT on a fresh connection would report statements lost with the old one
         self.with_session_write::<QueryResult>(
             id,
             true,
-            move |s| s.query(sql),
+            move |s| {
+                // Postgres answers COMMIT of a transaction an error aborted with a rollback,
+                // not an error: nothing would be committed while it says so
+                if commit
+                    && pg
+                    && let Err(e) = s.query("SELECT 1")
+                    && e.contains("current transaction is aborted")
+                {
+                    let _ = s.query("ROLLBACK");
+                    return Err("a statement of the transaction failed, so Postgres rolled it back: nothing was committed".into());
+                }
+                s.query(sql)
+            },
             window,
             cx,
             Box::new(move |v, r, w, cx| {

@@ -64,24 +64,28 @@ impl Grid {
         self.order.get(display_row).copied()
     }
 
-    /// The value shown: a pending edit, else the loaded one ("NULL" for NULL).
-    pub fn value(&self, id: usize, col: usize) -> String {
+    /// The value: a pending edit, else the loaded one; None is NULL.
+    pub fn cell(&self, id: usize, col: usize) -> Option<String> {
         match self.changes.cells.get(&(id, col)) {
-            Some(Some(v)) => v.clone(),
-            Some(None) => "NULL".into(),
+            Some(v) => v.clone(),
             None => self
                 .r
                 .rows
                 .get(id)
                 .and_then(|r| r.get(col))
                 .cloned()
-                .unwrap_or_default(),
+                .flatten(),
         }
     }
 
+    /// The value as shown: "NULL" for NULL.
+    pub fn value(&self, id: usize, col: usize) -> String {
+        self.cell(id, col).unwrap_or_else(|| "NULL".into())
+    }
+
     fn sort_order(&mut self, col: usize, sort: ColumnSort) {
-        let keys: Vec<String> = (0..self.r.rows.len())
-            .map(|id| self.value(id, col))
+        let keys: Vec<Option<String>> = (0..self.r.rows.len())
+            .map(|id| self.cell(id, col))
             .collect();
         match sort {
             ColumnSort::Default => self.order.sort_unstable(),
@@ -104,7 +108,7 @@ impl Grid {
             .filter(|id| with_deleted || !self.changes.deleted.contains(id))
             .map(|&id| {
                 (0..self.r.columns.len())
-                    .map(|c| self.value(id, c))
+                    .map(|c| self.cell(id, c))
                     .collect()
             })
             .collect();
@@ -120,7 +124,7 @@ impl Grid {
     /// Append an empty row (all NULL) to be inserted on save; returns its display row.
     pub fn add_row(&mut self) -> usize {
         let id = self.r.rows.len();
-        self.r.rows.push(vec!["NULL".into(); self.r.columns.len()]);
+        self.r.rows.push(vec![None; self.r.columns.len()]);
         self.order.push(id);
         self.changes.inserted.insert(id);
         self.order.len() - 1
@@ -140,12 +144,7 @@ impl Grid {
 pub fn chart_columns(r: &QueryResult) -> (Option<usize>, Vec<usize>) {
     let numeric: Vec<usize> = (0..r.columns.len())
         .filter(|&c| {
-            let mut vals = r
-                .rows
-                .iter()
-                .map(|row| row[c].as_str())
-                .filter(|v| *v != "NULL")
-                .peekable();
+            let mut vals = r.rows.iter().filter_map(|row| row[c].as_deref()).peekable();
             vals.peek().is_some() && vals.all(|v| num(v).is_some())
         })
         .collect();
@@ -182,13 +181,13 @@ pub fn chart_data(g: &Grid, label: Option<usize>, value: usize, max: usize) -> V
 
 /// Statistics of a column over the shown rows: (label, value) pairs for the value panel.
 pub fn column_stats(g: &Grid, col: usize) -> Vec<(&'static str, String)> {
-    let vals: Vec<String> = g
+    let vals: Vec<Option<String>> = g
         .order
         .iter()
         .filter(|id| !g.changes.deleted.contains(id))
-        .map(|&id| g.value(id, col))
+        .map(|&id| g.cell(id, col))
         .collect();
-    let present: Vec<&String> = vals.iter().filter(|v| *v != "NULL").collect();
+    let present: Vec<&String> = vals.iter().flatten().collect();
     let distinct = present
         .iter()
         .collect::<std::collections::HashSet<_>>()
@@ -244,19 +243,22 @@ pub fn num(v: &str) -> Option<f64> {
 
 /// NULL first, then numbers by value, then everything else by text: a total order, so
 /// mixed columns sort consistently.
-fn compare(a: &str, b: &str) -> Ordering {
-    let rank = |v: &str| match (v == "NULL", num(v)) {
-        (true, _) => 0,
-        (_, Some(_)) => 1,
-        _ => 2,
+fn compare(a: &Option<String>, b: &Option<String>) -> Ordering {
+    let rank = |v: &Option<String>| match v.as_deref().map(num) {
+        None => 0,
+        Some(Some(_)) => 1,
+        Some(None) => 2,
     };
-    rank(a).cmp(&rank(b)).then_with(|| match (num(a), num(b)) {
-        (Some(x), Some(y)) => x.total_cmp(&y),
-        _ => a
-            .to_lowercase()
-            .cmp(&b.to_lowercase())
-            .then_with(|| a.cmp(b)),
-    })
+    let (sa, sb) = (a.as_deref().unwrap_or(""), b.as_deref().unwrap_or(""));
+    rank(a)
+        .cmp(&rank(b))
+        .then_with(|| match (num(sa), num(sb)) {
+            (Some(x), Some(y)) => x.total_cmp(&y),
+            _ => sa
+                .to_lowercase()
+                .cmp(&sb.to_lowercase())
+                .then_with(|| sa.cmp(sb)),
+        })
 }
 
 impl TableDelegate for Grid {
@@ -299,14 +301,16 @@ impl TableDelegate for Grid {
         let Some(id) = self.row_id(row) else {
             return div();
         };
-        let v = self.value(id, col);
+        let cell = self.cell(id, col);
+        let null = cell.is_none(); // a text 'NULL' is no NULL
+        let v = cell.unwrap_or_else(|| "NULL".into());
         let edited = self.changes.cells.contains_key(&(id, col));
         let deleted = self.changes.deleted.contains(&id);
         let inserted = self.changes.inserted.contains(&id);
         div()
             .size_full()
             .truncate()
-            .when(v == "NULL", |d| d.text_color(t.muted_foreground).italic())
+            .when(null, |d| d.text_color(t.muted_foreground).italic())
             .when(inserted, |d| d.bg(t.success.opacity(0.15)))
             .when(edited, |d| d.bg(t.warning.opacity(0.25)))
             .when(deleted, |d| {
@@ -323,17 +327,14 @@ mod tests {
     // Not `super::*`: gpui's glob exports its own `test` macro.
     use super::{Grid, chart_columns, chart_data, column_stats, compare};
     use crate::db::QueryResult;
+    use crate::db::{cells, texts};
 
     #[test]
     fn stats_for_numbers_and_text() {
         let mut g = Grid::default();
         g.set(QueryResult {
             columns: vec!["n".into(), "s".into()],
-            rows: vec![
-                vec!["1".into(), "b".into()],
-                vec!["NULL".into(), "a".into()],
-                vec!["2.5".into(), "b".into()],
-            ],
+            rows: cells(vec![vec!["1", "b"], vec!["NULL", "a"], vec!["2.5", "b"]]),
             ..Default::default()
         });
         let n = column_stats(&g, 0);
@@ -365,7 +366,7 @@ mod tests {
         let mut g = Grid::default();
         g.set(QueryResult {
             columns: vec!["name".into()],
-            rows: vec![vec!["b".into()], vec!["c".into()], vec!["a".into()]],
+            rows: cells(vec![vec!["b"], vec!["c"], vec!["a"]]),
             ..Default::default()
         });
         (g.sort, g.order) = (Some((0, super::ColumnSort::Ascending)), vec![2, 0, 1]);
@@ -380,11 +381,7 @@ mod tests {
         let mut g = Grid::default();
         g.set(QueryResult {
             columns: vec!["name".into()],
-            rows: vec![
-                vec!["Marco".into()],
-                vec!["Eri".into()],
-                vec!["Tarma".into()],
-            ],
+            rows: cells(vec![vec!["Marco"], vec!["Eri"], vec!["Tarma"]]),
             ..Default::default()
         });
         g.order = vec![2, 0, 1]; // sorted
@@ -398,14 +395,14 @@ mod tests {
     #[test]
     fn chart_picks_label_and_numeric_columns() {
         let mut g = Grid::default();
-        let row = |a: &str, b: &str, c: &str| vec![a.to_string(), b.to_string(), c.to_string()];
+        let row = |a: &'static str, b: &'static str, c: &'static str| vec![a, b, c];
         g.set(QueryResult {
             columns: vec!["name".into(), "logs".into(), "dams".into()],
-            rows: vec![
+            rows: cells(vec![
                 row("Marco", "10", "NULL"),
                 row("Eri", "2.5", "3"),
                 row("Marco", "1", "1"),
-            ],
+            ]),
             ..Default::default()
         });
         assert_eq!(chart_columns(&g.r), (Some(0), vec![1, 2]));
@@ -419,7 +416,7 @@ mod tests {
         );
         g.set(QueryResult {
             columns: vec!["year".into(), "n".into()],
-            rows: vec![vec!["2020".into(), "4".into()]],
+            rows: cells(vec![vec!["2020", "4"]]),
             ..Default::default()
         });
         assert_eq!(chart_columns(&g.r), (Some(0), vec![1]));
@@ -430,22 +427,23 @@ mod tests {
         let mut g = Grid::default();
         g.set(QueryResult {
             columns: vec!["n".into()],
-            rows: vec![vec!["10".into()], vec!["NULL".into()], vec!["9".into()]],
+            rows: cells(vec![vec!["10"], vec!["NULL"], vec!["9"]]),
             ..Default::default()
         });
-        let keys: Vec<String> = (0..3).map(|id| g.value(id, 0)).collect();
+        let keys: Vec<Option<String>> = (0..3).map(|id| g.cell(id, 0)).collect();
         g.order.sort_by(|&a, &b| compare(&keys[a], &keys[b]));
         assert_eq!(g.order, [1, 2, 0]); // NULL, 9, 10: numeric, not text order
-        let mut mixed = ["1a", "Nan", "10", "2", "NULL"];
-        mixed.sort_by(|a, b| compare(a, b));
-        assert_eq!(mixed, ["NULL", "2", "10", "1a", "Nan"]); // numbers, then text
+        let mut mixed = cells(vec![vec!["1a", "Nan", "10", "2", "NULL"]]).remove(0);
+        mixed.sort_by(compare);
+        // NULL, numbers, then text (a text 'NULL' is text)
+        assert_eq!(texts(&[mixed]), [["NULL", "2", "10", "1a", "Nan"]]);
         g.changes.cells.insert((0, 0), Some("1".into()));
         assert_eq!(g.value(g.row_id(2).unwrap(), 0), "1");
         let d = g.add_row();
         assert_eq!(g.row_id(d), Some(3));
         g.changes.deleted.insert(2);
         assert_eq!(
-            g.shown().rows,
+            texts(&g.shown().rows),
             [
                 vec!["NULL".to_string()],
                 vec!["1".into()],

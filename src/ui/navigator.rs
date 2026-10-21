@@ -273,33 +273,38 @@ impl AppView {
                         .into_any_element(),
                 );
                 for col in cols.map(|r| r.rows.as_slice()).unwrap_or_default() {
-                    let (icon, color) = match col.get(3).map(String::as_str) {
+                    let (icon, color) = match col.get(3).map(db::text) {
                         Some("PK") => (IconName::KeyRound, t.warning),
                         Some("FK") => (IconName::Link, BRAND.into()),
                         _ => (IconName::Columns2, t.muted_foreground),
                     };
                     let refs = col
                         .get(4)
+                        .map(db::text)
                         .filter(|r| !r.is_empty())
                         .map(|r| format!("→ {r}"));
                     items.push(
-                        row(format!("col-{id}-{name}-{}", col[0]).into(), 2, false)
-                            .child(Icon::new(icon).size_3().text_color(color))
-                            .child(div().truncate().child(col[0].clone()))
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(t.muted_foreground)
-                                    .child(col.get(1).cloned().unwrap_or_default()),
-                            )
-                            .children(refs.map(|r| {
-                                div()
-                                    .text_xs()
-                                    .text_color(Hsla::from(BRAND))
-                                    .truncate()
-                                    .child(r)
-                            }))
-                            .into_any_element(),
+                        row(
+                            format!("col-{id}-{name}-{}", db::text(&col[0])).into(),
+                            2,
+                            false,
+                        )
+                        .child(Icon::new(icon).size_3().text_color(color))
+                        .child(div().truncate().child(db::text(&col[0]).to_string()))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(t.muted_foreground)
+                                .child(col.get(1).map(db::text).unwrap_or_default().to_string()),
+                        )
+                        .children(refs.map(|r| {
+                            div()
+                                .text_xs()
+                                .text_color(Hsla::from(BRAND))
+                                .truncate()
+                                .child(r)
+                        }))
+                        .into_any_element(),
                     );
                 }
             }

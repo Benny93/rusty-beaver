@@ -93,6 +93,7 @@ impl AppView {
                 .child("Select a cell")
                 .into_any_element();
         };
+        let null = g.cell(id, c).is_none();
         let raw = g.value(id, c);
         let pretty = serde_json::from_str::<Value>(&raw)
             .ok()
@@ -146,9 +147,7 @@ impl AppView {
                     .p_2()
                     .text_sm()
                     .font_family(t.mono_font_family.clone())
-                    .when(shown == "NULL", |d| {
-                        d.italic().text_color(t.muted_foreground)
-                    })
+                    .when(null, |d| d.italic().text_color(t.muted_foreground))
                     .child(shown),
             )
             .child(
@@ -194,8 +193,8 @@ impl AppView {
                 .map(|c| {
                     cols.rows
                         .iter()
-                        .find(|r| r[0] == *c)
-                        .map(|r| r[1].clone())
+                        .find(|r| db::text(&r[0]) == c)
+                        .map(|r| db::text(&r[1]).to_string())
                         .unwrap_or_default()
                 })
                 .collect()
@@ -237,6 +236,7 @@ impl AppView {
                     .overflow_y_scrollbar()
                     .px_2()
                     .children(g.r.columns.iter().enumerate().map(|(c, name)| {
+                        let null = g.cell(id, c).is_none();
                         let v = g.value(id, c);
                         let edited = g.changes.cells.contains_key(&(id, c));
                         h_flex()
@@ -268,9 +268,7 @@ impl AppView {
                                     .min_w_0()
                                     .px_1()
                                     .rounded_sm()
-                                    .when(v == "NULL", |d| {
-                                        d.text_color(t.muted_foreground).italic()
-                                    })
+                                    .when(null, |d| d.text_color(t.muted_foreground).italic())
                                     .when(edited, |d| d.bg(t.warning.opacity(0.25)))
                                     .child(v),
                             )

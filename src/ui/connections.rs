@@ -164,7 +164,7 @@ impl AppView {
                     t,
                     cols.rows
                         .into_iter()
-                        .map(|r| (r[0].clone(), r[1].clone()))
+                        .map(|r| (db::text(&r[0]).to_string(), db::text(&r[1]).to_string()))
                         .collect(),
                 );
             }
@@ -483,7 +483,7 @@ impl AppView {
                     let cols: Vec<(String, bool)> = cols
                         .rows
                         .iter()
-                        .map(|c| (c[0].clone(), c[3] == "PK"))
+                        .map(|c| (db::text(&c[0]).to_string(), db::text(&c[3]) == "PK"))
                         .collect();
                     db::generate(driver, &table, &cols, kind)
                 });

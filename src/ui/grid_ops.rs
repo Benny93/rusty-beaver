@@ -80,12 +80,12 @@ impl AppView {
                 }
                 let (row, col) = need_cell()?;
                 let id = g.row_id(row).unwrap_or_default();
-                let (name, v) = (driver.quote(&g.r.columns[col]), g.value(id, col));
-                let cond = match (op == GridOp::FilterBy, v == "NULL") {
-                    (true, true) => format!("{name} IS NULL"),
-                    (false, true) => format!("{name} IS NOT NULL"),
-                    (true, false) => format!("{name} = {}", driver.literal(&v)),
-                    (false, false) => format!("{name} <> {}", driver.literal(&v)),
+                let (name, v) = (driver.quote(&g.r.columns[col]), g.cell(id, col));
+                let cond = match (op == GridOp::FilterBy, v) {
+                    (true, None) => format!("{name} IS NULL"),
+                    (false, None) => format!("{name} IS NOT NULL"),
+                    (true, Some(v)) => format!("{name} = {}", driver.literal(&v)),
+                    (false, Some(v)) => format!("{name} <> {}", driver.literal(&v)),
                 };
                 let tab = &mut self.tabs[ix];
                 let old = tab.filter.read(cx).value().trim().to_string();
@@ -111,8 +111,8 @@ impl AppView {
                     .order
                     .iter()
                     .filter(|id| !g.changes.deleted.contains(id)) // as shown()
-                    .map(|&id| g.value(id, col))
-                    .filter(|v| v != "NULL" && seen.insert(v.clone()))
+                    .filter_map(|&id| g.cell(id, col))
+                    .filter(|v| seen.insert(v.clone()))
                     .map(|v| {
                         if crate::grid::num(&v).is_some() {
                             v
@@ -136,9 +136,11 @@ impl AppView {
             GridOp::CopyValue | GridOp::CopyRow | GridOp::CopyInsert => {
                 let (row, col) = need_cell()?;
                 let id = g.row_id(row).unwrap_or_default();
-                let values: Vec<String> = (0..g.r.columns.len()).map(|c| g.value(id, c)).collect();
+                let cells: Vec<Option<String>> =
+                    (0..g.r.columns.len()).map(|c| g.cell(id, c)).collect();
+                let values: Vec<&str> = cells.iter().map(db::text).collect();
                 let text = match op {
-                    GridOp::CopyValue => values[col].clone(),
+                    GridOp::CopyValue => values[col].to_string(),
                     GridOp::CopyRow => values.join("\t"),
                     _ => format!(
                         "INSERT INTO {} ({}) VALUES ({});",
@@ -148,13 +150,9 @@ impl AppView {
                             .map(|c| driver.quote(c))
                             .collect::<Vec<_>>()
                             .join(", "),
-                        values
+                        cells
                             .iter()
-                            .map(|v| if v == "NULL" {
-                                v.clone()
-                            } else {
-                                driver.literal(v)
-                            })
+                            .map(|v| driver.literal_opt(v.as_deref()))
                             .collect::<Vec<_>>()
                             .join(", ")
                     ),
@@ -173,11 +171,11 @@ impl AppView {
                 editable()?;
                 let (row, col) = need_cell()?;
                 let id = g.row_id(row).unwrap_or_default();
-                let v = g.value(id, col);
+                let v = g.cell(id, col);
                 let tab = &mut self.tabs[ix];
                 tab.editing = Some((id, col));
                 tab.edit_input.update(cx, |i, cx| {
-                    i.set_value(if v == "NULL" { String::new() } else { v }, window, cx);
+                    i.set_value(v.unwrap_or_default(), window, cx);
                     i.focus(window, cx);
                 });
                 Ok(None)
@@ -219,7 +217,7 @@ impl AppView {
                 let (row, col) = need_cell()?;
                 let id = g.row_id(row).unwrap_or_default();
                 let name = g.r.columns[col].clone();
-                let value = g.value(id, col);
+                let value = g.cell(id, col);
                 // The Columns view knows what each column references ("table.column").
                 let refs = t
                     .columns
@@ -228,8 +226,8 @@ impl AppView {
                     .r
                     .rows
                     .iter()
-                    .find(|c| c[0] == name)
-                    .and_then(|c| c.get(4).cloned())
+                    .find(|c| db::text(&c[0]) == name)
+                    .and_then(|c| c.get(4).cloned().flatten())
                     .unwrap_or_default();
                 let target = refs
                     .split(", ")
@@ -237,9 +235,9 @@ impl AppView {
                     .filter(|r| !r.is_empty())
                     .ok_or(format!("{name} is not a foreign key"))?
                     .to_string();
-                if value == "NULL" {
+                let Some(value) = value else {
                     return Err(format!("{name} is NULL: it references nothing"));
-                }
+                };
                 // "schema.table.column" or "table.column"; a bare table means its primary key.
                 let (ref_table, ref_col) = match target.rsplit_once('.') {
                     Some((t, c)) if !(driver == Driver::Postgres && !t.contains('.')) => {
@@ -270,7 +268,8 @@ impl AppView {
                 editable()?;
                 let (row, _) = need_cell()?;
                 let id = g.row_id(row).unwrap_or_default();
-                let values: Vec<String> = (0..g.r.columns.len()).map(|c| g.value(id, c)).collect();
+                let values: Vec<Option<String>> =
+                    (0..g.r.columns.len()).map(|c| g.cell(id, c)).collect();
                 let key: Vec<usize> = t
                     .key
                     .iter()
@@ -290,7 +289,7 @@ impl AppView {
                     .unwrap_or_default();
                 for (c, v) in values.into_iter().enumerate() {
                     // a blob's "[BLOB n bytes]" is no value to insert
-                    if !key.contains(&c) && v != "NULL" && !db::is_blob_text(&v) {
+                    if let Some(v) = v.filter(|v| !key.contains(&c) && !db::is_blob_text(v)) {
                         self.set_cell(ix, new_id, c, Some(v), cx);
                     }
                 }
@@ -465,8 +464,7 @@ impl AppView {
         self.tabs[tab].grid.update(cx, |g, cx| {
             let d = g.delegate_mut();
             let loaded = d.r.rows.get(id).and_then(|r| r.get(col)).cloned();
-            let same = !d.changes.inserted.contains(&id)
-                && loaded.as_deref() == Some(value.as_deref().unwrap_or("NULL"));
+            let same = !d.changes.inserted.contains(&id) && loaded == Some(value.clone());
             if same {
                 d.changes.cells.remove(&(id, col));
             } else {
@@ -491,7 +489,7 @@ impl AppView {
             return;
         };
         // Enter on a NULL cell without typing keeps it NULL (not '')
-        let was_null = t.grid.read(cx).delegate().value(id, col) == "NULL";
+        let was_null = t.grid.read(cx).delegate().cell(id, col).is_none();
         if let Some(v) = value.filter(|v| !(was_null && v.is_empty())) {
             let running = self.tabs[tab].running; // set_cell says why it did not change it
             self.set_cell(tab, id, col, Some(v), cx);

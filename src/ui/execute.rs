@@ -569,8 +569,9 @@ impl AppView {
                         cx,
                         Box::new(move |v, c, _, cx| {
                             if let Some(t) = v.tab_ix(key).and_then(|i| v.tabs.get_mut(i)) {
-                                t.total =
-                                    c.ok().and_then(|c| c.rows.first()?.first()?.parse().ok());
+                                t.total = c.ok().and_then(|c| {
+                                    c.rows.first()?.first()?.as_deref()?.parse().ok()
+                                });
                             }
                             cx.notify();
                         }),

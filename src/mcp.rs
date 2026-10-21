@@ -456,7 +456,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Execute SQL in the active tab, or in the SQL editor of `connection` (opens one when needed), shows the result grid, returns columns + rows."
+        description = "Execute SQL in the active tab, or in the SQL editor of `connection` (opens one when needed), shows the result grid, returns columns + rows (SQL NULL is null)."
     )]
     async fn run_sql(&self, Parameters(a): Parameters<SqlArg>) -> Result<CallToolResult, McpError> {
         self.ui(

@@ -36,7 +36,6 @@ impl Driver {
         }
     }
 
-    /// An identifier quoted for this dialect.
     /// A string as an SQL literal. MySQL also treats backslashes as escapes.
     /// Servers coerce '42' to numbers and dates.
     pub fn literal(self, v: &str) -> String {
@@ -52,6 +51,7 @@ impl Driver {
         v.map(|v| self.literal(v)).unwrap_or_else(|| "NULL".into())
     }
 
+    /// An identifier quoted for this dialect.
     pub fn quote(self, ident: &str) -> String {
         match self {
             Driver::Mysql => format!("`{}`", ident.replace('`', "``")),
@@ -208,16 +208,16 @@ impl Changes {
         driver: Driver,
         table: &str,
         columns: &[String],
-        rows: &[Vec<String>],
+        rows: &[Vec<Option<String>>],
         key: &[usize],
     ) -> Result<Vec<String>, String> {
         let t = driver.table_ref(table);
         let q = |c: usize| driver.quote(&columns[c]);
         let where_key = |row: usize| {
             key.iter()
-                .map(|&c| match rows[row][c].as_str() {
-                    "NULL" => format!("{} IS NULL", q(c)),
-                    v => format!("{} = {}", q(c), driver.literal(v)),
+                .map(|&c| match rows[row][c].as_deref() {
+                    None => format!("{} IS NULL", q(c)),
+                    Some(v) => format!("{} = {}", q(c), driver.literal(v)),
                 })
                 .collect::<Vec<_>>()
                 .join(" AND ")
@@ -418,13 +418,19 @@ pub struct ConnConfig {
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct QueryResult {
     pub columns: Vec<String>,
-    pub rows: Vec<Vec<String>>,
+    /// None is SQL NULL (a text 'NULL' is Some("NULL")).
+    pub rows: Vec<Vec<Option<String>>>,
     /// Rows changed by the last statement without a result set.
     pub affected: Option<u64>,
     #[serde(skip)]
     pub elapsed: Duration,
     /// More rows existed than `MAX_ROWS`.
     pub truncated: bool,
+}
+
+/// A cell as text: NULL for SQL NULL (the grid, text exports, catalog queries).
+pub fn text(v: &Option<String>) -> &str {
+    v.as_deref().unwrap_or("NULL")
 }
 
 /// Rows kept per result set; the grid is virtual, but memory isn't free.
@@ -581,7 +587,7 @@ impl Session {
         let r = self.query(self.driver().tables_sql())?;
         Ok(r.rows
             .into_iter()
-            .map(|mut row| (std::mem::take(&mut row[0]), std::mem::take(&mut row[1])))
+            .map(|row| (text(&row[0]).to_string(), text(&row[1]).to_string()))
             .collect())
     }
 
@@ -592,7 +598,7 @@ impl Session {
             let r = self.query(&sql)?;
             // MySQL: (name, CREATE ...) for tables, plus charset columns for views
             if let Some(v) = r.rows.first().and_then(|row| row.get(1).or(row.last())) {
-                return Ok(format!("{v};"));
+                return Ok(format!("{};", text(v)));
             }
         }
         // Postgres has no SHOW CREATE: rebuild it from the columns.
@@ -603,17 +609,17 @@ impl Session {
             .map(|c| {
                 format!(
                     "    {} {}{}",
-                    driver.quote(&c[0]),
-                    c[1],
-                    if c[2] == "NO" { " NOT NULL" } else { "" }
+                    driver.quote(text(&c[0])),
+                    text(&c[1]),
+                    if text(&c[2]) == "NO" { " NOT NULL" } else { "" }
                 )
             })
             .collect();
         let pk: Vec<String> = cols
             .rows
             .iter()
-            .filter(|c| c[3] == "PK")
-            .map(|c| driver.quote(&c[0]))
+            .filter(|c| text(&c[3]) == "PK")
+            .map(|c| driver.quote(text(&c[0])))
             .collect();
         if !pk.is_empty() {
             lines.push(format!("    PRIMARY KEY ({})", pk.join(", ")));
@@ -634,7 +640,7 @@ impl Session {
         };
         self.query(sql)
             .ok()
-            .and_then(|r| r.rows.first()?.first().cloned())
+            .and_then(|r| r.rows.first()?.first().cloned().flatten())
             .map(|v| v.split(" (").next().unwrap_or(&v).to_string())
             .unwrap_or_default()
     }
@@ -738,7 +744,7 @@ impl Session {
         for row in &mut r.rows {
             let refs = fks
                 .iter()
-                .filter(|f| f.column == row[0])
+                .filter(|f| f.column == text(&row[0]))
                 .map(|f| {
                     if f.ref_column.is_empty() {
                         f.ref_table.clone()
@@ -748,10 +754,10 @@ impl Session {
                 })
                 .collect::<Vec<_>>()
                 .join(", ");
-            if !refs.is_empty() && row[3].is_empty() {
-                row[3] = "FK".into();
+            if !refs.is_empty() && text(&row[3]).is_empty() {
+                row[3] = Some("FK".into());
             }
-            row.push(refs);
+            row.push(Some(refs));
         }
         Ok(r)
     }
@@ -772,8 +778,10 @@ impl Session {
                 .rows
                 .into_iter()
                 .map(|mut c| {
-                    let fk = fks.iter().any(|f| f.table == name && f.column == c[0]);
-                    let key = if c[3] == "PK" {
+                    let fk = fks
+                        .iter()
+                        .any(|f| f.table == name && f.column == text(&c[0]));
+                    let key = if text(&c[3]) == "PK" {
                         "PK"
                     } else if fk {
                         "FK"
@@ -781,8 +789,8 @@ impl Session {
                         ""
                     };
                     (
-                        std::mem::take(&mut c[0]),
-                        std::mem::take(&mut c[1]),
+                        c[0].take().unwrap_or_default(),
+                        c[1].take().unwrap_or_default(),
                         key.to_string(),
                     )
                 })
@@ -797,16 +805,16 @@ impl Session {
         Ok(r.rows
             .into_iter()
             .map(|mut x| ForeignKey {
-                table: std::mem::take(&mut x[0]),
-                column: std::mem::take(&mut x[1]),
-                ref_table: std::mem::take(&mut x[2]),
-                ref_column: std::mem::take(&mut x[3]),
+                table: x[0].take().unwrap_or_default(),
+                column: x[1].take().unwrap_or_default(),
+                ref_table: x[2].take().unwrap_or_default(),
+                ref_column: x[3].take().unwrap_or_default(),
             })
             .collect())
     }
 }
 
-fn push_row(r: &mut QueryResult, row: Vec<String>) {
+fn push_row(r: &mut QueryResult, row: Vec<Option<String>>) {
     if r.rows.len() < MAX_ROWS {
         r.rows.push(row);
     } else {
@@ -849,11 +857,11 @@ fn sqlite_query(c: &rusqlite::Connection, sql: &str) -> Result<Vec<QueryResult>,
         while let Some(row) = rows.next().map_err(|e| e.to_string())? {
             let cells = (0..n)
                 .map(|i| match row.get_ref(i) {
-                    Ok(ValueRef::Null) | Err(_) => "NULL".into(),
-                    Ok(ValueRef::Integer(v)) => v.to_string(),
-                    Ok(ValueRef::Real(v)) => v.to_string(),
-                    Ok(ValueRef::Text(t)) => String::from_utf8_lossy(t).into_owned(),
-                    Ok(ValueRef::Blob(b)) => format!("[BLOB {} bytes]", b.len()), // see is_blob_text
+                    Ok(ValueRef::Null) | Err(_) => None,
+                    Ok(ValueRef::Integer(v)) => Some(v.to_string()),
+                    Ok(ValueRef::Real(v)) => Some(v.to_string()),
+                    Ok(ValueRef::Text(t)) => Some(String::from_utf8_lossy(t).into_owned()),
+                    Ok(ValueRef::Blob(b)) => Some(format!("[BLOB {} bytes]", b.len())), // see is_blob_text
                 })
                 .collect();
             push_row(&mut r, cells);
@@ -902,7 +910,7 @@ fn pg_query(c: &mut postgres::Client, sql: &str) -> Result<Vec<QueryResult>, Str
                     ..Default::default()
                 });
                 let cells = (0..row.len())
-                    .map(|i| row.get(i).unwrap_or("NULL").to_string())
+                    .map(|i| row.get(i).map(String::from))
                     .collect();
                 push_row(r, cells);
             }
@@ -1109,14 +1117,14 @@ fn mysql_query(c: &mut mysql::Conn, sql: &str) -> Result<Vec<QueryResult>, Strin
             }
             let cells = (0..row.len())
                 .map(|i| match row.as_ref(i) {
-                    None | Some(V::NULL) => "NULL".into(),
-                    Some(V::Bytes(b)) => String::from_utf8_lossy(b).into_owned(),
-                    Some(V::Int(v)) => v.to_string(),
-                    Some(V::UInt(v)) => v.to_string(),
-                    Some(V::Float(v)) => v.to_string(),
-                    Some(V::Double(v)) => v.to_string(),
+                    None | Some(V::NULL) => None,
+                    Some(V::Bytes(b)) => Some(String::from_utf8_lossy(b).into_owned()),
+                    Some(V::Int(v)) => Some(v.to_string()),
+                    Some(V::UInt(v)) => Some(v.to_string()),
+                    Some(V::Float(v)) => Some(v.to_string()),
+                    Some(V::Double(v)) => Some(v.to_string()),
                     Some(v @ (V::Date(..) | V::Time(..))) => {
-                        v.as_sql(true).trim_matches('\'').to_string()
+                        Some(v.as_sql(true).trim_matches('\'').to_string())
                     }
                 })
                 .collect();
@@ -1679,7 +1687,6 @@ pub fn statement_at(sql: &str, offset: usize, mysql: bool) -> std::ops::Range<us
 /// A result as text in a format picked by file extension: csv, tsv, json, md, sql (INSERTs
 /// into `table`), anything else is CSV.
 pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String {
-    let nul = |v: &str| v == "NULL";
     match ext.to_ascii_lowercase().as_str() {
         "json" => {
             // a repeated name (a.id, b.id) gets a suffix instead of overwriting: id, id_2
@@ -1704,11 +1711,8 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
                             .map(|(c, v)| {
                                 (
                                     c.clone(),
-                                    if nul(v) {
-                                        serde_json::Value::Null
-                                    } else {
-                                        serde_json::Value::String(v.clone())
-                                    },
+                                    v.clone()
+                                        .map_or(serde_json::Value::Null, serde_json::Value::String),
                                 )
                             })
                             .collect(),
@@ -1731,7 +1735,10 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
             for row in &r.rows {
                 out += &format!(
                     "| {} |\n",
-                    row.iter().map(|v| esc(v)).collect::<Vec<_>>().join(" | ")
+                    row.iter()
+                        .map(|v| esc(text(v)))
+                        .collect::<Vec<_>>()
+                        .join(" | ")
                 );
             }
             out
@@ -1747,10 +1754,14 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
                     v
                 }
             };
-            let cells: Vec<Vec<String>> = std::iter::once(r.columns.clone())
-                .chain(r.rows.iter().cloned())
-                .map(|row| row.iter().map(|v| cut(v)).collect())
-                .collect();
+            let cells: Vec<Vec<String>> =
+                std::iter::once(r.columns.iter().map(|c| cut(c)).collect())
+                    .chain(
+                        r.rows
+                            .iter()
+                            .map(|row| row.iter().map(|v| cut(text(v))).collect()),
+                    )
+                    .collect();
             let widths: Vec<usize> = (0..r.columns.len())
                 .map(|c| cells.iter().map(|row| row[c].width()).max().unwrap_or(0))
                 .collect();
@@ -1776,14 +1787,18 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
             out
         }
         "tsv" => {
-            let line = |row: &[String]| {
+            let line = |row: Vec<&str>| {
                 row.iter()
                     .map(|v| v.replace(['\t', '\r', '\n'], " "))
                     .collect::<Vec<_>>()
                     .join("\t")
             };
-            std::iter::once(line(&r.columns))
-                .chain(r.rows.iter().map(|row| line(row)))
+            std::iter::once(line(r.columns.iter().map(String::as_str).collect()))
+                .chain(
+                    r.rows
+                        .iter()
+                        .map(|row| line(row.iter().map(text).collect())),
+                )
                 .collect::<Vec<_>>()
                 .join("\n")
                 + "\n"
@@ -1802,11 +1817,7 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
                         "INSERT INTO {} ({cols}) VALUES ({});\n",
                         driver.table_ref(table),
                         row.iter()
-                            .map(|v| if nul(v) {
-                                "NULL".into()
-                            } else {
-                                driver.literal(v)
-                            })
+                            .map(|v| driver.literal_opt(v.as_deref()))
                             .collect::<Vec<_>>()
                             .join(", ")
                     )
@@ -1934,14 +1945,34 @@ pub fn to_csv(r: &QueryResult) -> String {
             s.to_string()
         }
     };
-    let line = |row: &[String]| row.iter().map(|s| cell(s)).collect::<Vec<_>>().join(",");
-    let mut out = line(&r.columns);
+    let line = |row: Vec<&str>| row.into_iter().map(cell).collect::<Vec<_>>().join(",");
+    let mut out = line(r.columns.iter().map(String::as_str).collect());
     for row in &r.rows {
         out.push_str("\r\n");
-        out.push_str(&line(row));
+        out.push_str(&line(row.iter().map(text).collect())); // NULL as NULL, as the import reads it
     }
     out.push_str("\r\n");
     out
+}
+
+/// Rows for tests: "NULL" is NULL.
+#[cfg(test)]
+pub fn cells(rows: Vec<Vec<&str>>) -> Vec<Vec<Option<String>>> {
+    rows.into_iter()
+        .map(|r| {
+            r.into_iter()
+                .map(|v| (v != "NULL").then(|| v.to_string()))
+                .collect()
+        })
+        .collect()
+}
+
+/// Rows as text for tests: NULL is "NULL".
+#[cfg(test)]
+pub fn texts(rows: &[Vec<Option<String>>]) -> Vec<Vec<String>> {
+    rows.iter()
+        .map(|r| r.iter().map(|v| text(v).to_string()).collect())
+        .collect()
 }
 
 #[cfg(test)]
@@ -1956,7 +1987,7 @@ mod tests {
         let r = s.query("SELECT id, name FROM t ORDER BY id").unwrap();
         assert_eq!(r.columns, ["id", "name"]);
         assert_eq!(
-            r.rows,
+            texts(&r.rows),
             [
                 vec!["1".to_string(), "a".into()],
                 vec!["2".into(), "NULL".into()]
@@ -1967,14 +1998,14 @@ mod tests {
             [("t".to_string(), "TABLE".to_string())]
         );
         let cols = s.columns("t").unwrap();
-        assert_eq!(cols.rows[0], ["id", "INTEGER", "YES", "PK", ""]);
+        assert_eq!(texts(&cols.rows)[0], ["id", "INTEGER", "YES", "PK", ""]);
         s.query(
             "CREATE TABLE c(id INTEGER PRIMARY KEY, t_id INT REFERENCES t(id), x INT REFERENCES t)",
         )
         .unwrap();
         let fk = s.columns("c").unwrap();
-        assert_eq!(fk.rows[1][3..], ["FK", "t.id"]);
-        assert_eq!(fk.rows[2][3..], ["FK", "t.id"]); // bare REFERENCES t: its primary key
+        assert_eq!(texts(&fk.rows)[1][3..], ["FK", "t.id"]);
+        assert_eq!(texts(&fk.rows)[2][3..], ["FK", "t.id"]); // bare REFERENCES t: its primary key
         assert_eq!(s.foreign_keys().unwrap().len(), 2);
         assert!(s.query("SELEC nope").is_err());
     }
@@ -1985,7 +2016,7 @@ mod tests {
         let v = s.query_all("CREATE TABLE t(a); INSERT INTO t VALUES (1),(2); SELECT * FROM t; SELECT count(*) FROM t;").unwrap();
         assert_eq!(v.len(), 4);
         assert_eq!(
-            (v[1].affected, v[2].rows.len(), v[3].rows[0][0].as_str()),
+            (v[1].affected, v[2].rows.len(), text(&v[3].rows[0][0])),
             (Some(2), 2, "2")
         );
         // DDL after a write reports no rows, not the write's count again
@@ -2010,13 +2041,13 @@ mod tests {
         );
         let r = QueryResult {
             columns: vec!["a".into(), "b".into()],
-            rows: vec![vec!["x,y".into(), "q\"".into()]],
+            rows: cells(vec![vec!["x,y", "q\""]]),
             ..Default::default()
         };
         assert_eq!(to_csv(&r), "a,b\r\n\"x,y\",\"q\"\"\"\r\n");
         let one = QueryResult {
             columns: vec!["note".into()],
-            rows: vec![vec!["".into()], vec!["x".into()], vec!["".into()]],
+            rows: cells(vec![vec![""], vec!["x"], vec![""]]),
             ..Default::default()
         };
         assert_eq!(parse_csv(&to_csv(&one)).len(), 4); // header + 3 rows, none lost
@@ -2037,6 +2068,39 @@ mod tests {
     }
 
     #[test]
+    fn a_text_null_is_no_null() {
+        let mut s = Session::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+        s.query_all("CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT); INSERT INTO t VALUES (1, 'NULL'), (2, NULL);")
+            .unwrap();
+        let r = s.query("SELECT * FROM t ORDER BY id").unwrap();
+        assert_eq!(
+            (r.rows[0][1].as_deref(), r.rows[1][1].as_deref()),
+            (Some("NULL"), None)
+        );
+        // the row whose key is the text 'NULL' is found by = 'NULL', not IS NULL
+        s.query_all(
+            "CREATE TABLE k(name TEXT PRIMARY KEY, n INT); INSERT INTO k VALUES ('NULL', 1);",
+        )
+        .unwrap();
+        let k = s.query("SELECT * FROM k").unwrap();
+        let mut c = Changes::default();
+        c.cells.insert((0, 1), Some("2".into()));
+        let sql = c
+            .to_sql(Driver::Sqlite, "k", &k.columns, &k.rows, &[0])
+            .unwrap();
+        s.apply(&sql).unwrap();
+        assert_eq!(text(&s.query("SELECT n FROM k").unwrap().rows[0][0]), "2");
+        // exports: JSON string vs null, SQL 'NULL' vs NULL
+        let j: serde_json::Value =
+            serde_json::from_str(&export(&r, "json", Driver::Sqlite, "t")).unwrap();
+        assert_eq!(
+            (&j[0]["v"], &j[1]["v"]),
+            (&"NULL".into(), &serde_json::Value::Null)
+        );
+        assert!(export(&r, "sql", Driver::Sqlite, "t").contains("VALUES ('1', 'NULL')"));
+    }
+
+    #[test]
     fn literals_escape_per_dialect() {
         assert_eq!(Driver::Sqlite.literal(r"it's C:\t"), r"'it''s C:\t'");
         assert_eq!(Driver::Postgres.literal(r"a\"), r"'a\'");
@@ -2049,7 +2113,7 @@ mod tests {
         s.query("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT, n INT); INSERT INTO t VALUES (1,'a',1),(2,'b''s',2),(3,'c',3);").unwrap();
         let r = s.query("SELECT * FROM t ORDER BY id").unwrap();
         let mut rows = r.rows.clone();
-        rows.push(vec!["NULL".into(); 3]); // added in the grid
+        rows.push(vec![None; 3]); // added in the grid
         let mut c = Changes::default();
         c.cells.insert((1, 1), Some("it's".into()));
         c.cells.insert((1, 2), None);
@@ -2071,7 +2135,7 @@ mod tests {
         s.apply(&sql).unwrap();
         let after = s.query("SELECT name, n FROM t ORDER BY id").unwrap();
         assert_eq!(
-            after.rows,
+            texts(&after.rows),
             [
                 vec!["a".to_string(), "1".into()],
                 vec!["it's".into(), "NULL".into()],
@@ -2080,14 +2144,20 @@ mod tests {
         );
         // A failing statement rolls everything back.
         assert!(s.apply(&["DELETE FROM t".into(), "nope".into()]).is_err());
-        assert_eq!(s.query("SELECT count(*) FROM t").unwrap().rows[0][0], "3");
+        assert_eq!(
+            text(&s.query("SELECT count(*) FROM t").unwrap().rows[0][0]),
+            "3"
+        );
         // A row gone meanwhile is an error, and nothing else is kept.
         let e = s.apply(&[
             "INSERT INTO t(name) VALUES ('x')".into(),
             "UPDATE t SET n = 1 WHERE id = 99".into(),
         ]);
         assert!(e.unwrap_err().contains("not found"));
-        assert_eq!(s.query("SELECT count(*) FROM t").unwrap().rows[0][0], "3");
+        assert_eq!(
+            text(&s.query("SELECT count(*) FROM t").unwrap().rows[0][0]),
+            "3"
+        );
         // In the user's transaction a failing batch takes back its earlier statements only.
         s.begin().unwrap();
         s.query("INSERT INTO t(name) VALUES ('kept')").unwrap();
@@ -2098,12 +2168,18 @@ mod tests {
                 .contains("none of them kept")
         );
         s.query("COMMIT").unwrap();
-        assert_eq!(s.query("SELECT count(*) FROM t").unwrap().rows[0][0], "4");
+        assert_eq!(
+            text(&s.query("SELECT count(*) FROM t").unwrap().rows[0][0]),
+            "4"
+        );
         // Not in a transaction after all (COMMIT typed in a script): still all or nothing,
         // and no transaction is left open.
         assert!(s.apply_in(&bad, false).is_err());
         assert!(s.query("COMMIT").is_err(), "no transaction is active");
-        assert_eq!(s.query("SELECT count(*) FROM t").unwrap().rows[0][0], "4");
+        assert_eq!(
+            text(&s.query("SELECT count(*) FROM t").unwrap().rows[0][0]),
+            "4"
+        );
         // No primary key: updates are refused, inserts are fine.
         assert!(
             c.to_sql(Driver::Sqlite, "t", &r.columns, &rows, &[])
@@ -2143,10 +2219,7 @@ mod tests {
     fn csv_roundtrip_and_import() {
         let r = QueryResult {
             columns: vec!["id".into(), "name".into()],
-            rows: vec![
-                vec!["1".into(), "a, \"b\"\nc".into()],
-                vec!["2".into(), "NULL".into()],
-            ],
+            rows: cells(vec![vec!["1", "a, \"b\"\nc"], vec!["2", "NULL"]]),
             ..Default::default()
         };
         let parsed = parse_csv(&to_csv(&r));
@@ -2159,7 +2232,9 @@ mod tests {
         assert_eq!(
             s.query("SELECT name IS NULL FROM t WHERE id = 2")
                 .unwrap()
-                .rows[0][0],
+                .rows[0][0]
+                .as_deref()
+                .unwrap_or("NULL"),
             "1"
         );
         assert!(
@@ -2173,10 +2248,7 @@ mod tests {
     fn export_formats() {
         let r = QueryResult {
             columns: vec!["a".into(), "b".into()],
-            rows: vec![
-                vec!["1".into(), "NULL".into()],
-                vec!["x|y".into(), "it's".into()],
-            ],
+            rows: cells(vec![vec!["1", "NULL"], vec!["x|y", "it's"]]),
             ..Default::default()
         };
         assert_eq!(
@@ -2192,7 +2264,7 @@ mod tests {
         assert_eq!(j[0]["b"], serde_json::Value::Null);
         let dup = QueryResult {
             columns: vec!["id".into(), "id".into()],
-            rows: vec![vec!["1".into(), "2".into()]],
+            rows: cells(vec![vec!["1", "2"]]),
             ..Default::default()
         };
         let j: serde_json::Value =
@@ -2208,10 +2280,7 @@ mod tests {
         );
         let wide = QueryResult {
             columns: vec!["n".into(), "x".into()],
-            rows: vec![
-                vec!["日本".into(), "1".into()],
-                vec!["ab".into(), "2".into()],
-            ],
+            rows: cells(vec![vec!["日本", "1"], vec!["ab", "2"]]),
             ..Default::default()
         };
         // 日本 is four columns wide on screen: the | lines up
@@ -2230,7 +2299,7 @@ mod tests {
             .query(&row_counts_sql(Driver::Sqlite, &["a".into(), "b".into()]))
             .unwrap();
         assert_eq!(
-            r.rows,
+            texts(&r.rows),
             [
                 vec!["b".to_string(), "2".into()],
                 vec!["a".into(), "0".into()]

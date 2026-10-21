@@ -854,8 +854,8 @@ impl AppView {
                     t.key = cols
                         .rows
                         .iter()
-                        .filter(|c| c[3] == "PK")
-                        .map(|c| c[0].clone())
+                        .filter(|c| db::text(&c[3]) == "PK")
+                        .map(|c| db::text(&c[0]).to_string())
                         .collect();
                     t.ddl.update(cx, |e, cx| e.set_value(ddl, window, cx));
                     t.columns.update(cx, |g, cx| {

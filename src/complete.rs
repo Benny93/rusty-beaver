@@ -384,26 +384,36 @@ const RESERVED: &[&str] = &[
 /// there get quoted (Postgres "Orders", MySQL `my table`); `force` quotes every part (the user
 /// already typed the opening quote).
 pub fn sql_name(name: &str, driver: Driver, force: bool) -> String {
-    name.split('.')
-        .map(|p| {
-            let start = p
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
-            let rest = |c: char| c.is_ascii_alphanumeric() || c == '_';
-            // Postgres folds unquoted names to lower case: Orders would become orders
-            let plain = start
-                && p.chars().all(rest)
-                && !RESERVED.iter().any(|r| r.eq_ignore_ascii_case(p))
-                && (driver != Driver::Postgres || !p.chars().any(|c| c.is_ascii_uppercase()));
-            if plain && !force {
-                p.to_string()
-            } else {
-                driver.quote(p)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(".")
+    // schema.table: only Postgres names have a schema; MySQL's a.b is one name
+    match name.split_once('.') {
+        Some((schema, t)) if driver == Driver::Postgres => {
+            format!(
+                "{}.{}",
+                ident(schema, driver, force),
+                ident(t, driver, force)
+            )
+        }
+        _ => ident(name, driver, force),
+    }
+}
+
+/// One name, quoted where it has to be (or always, with `force`).
+fn ident(p: &str, driver: Driver, force: bool) -> String {
+    let start = p
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+    let rest = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    // Postgres folds unquoted names to lower case: Orders would become orders
+    let plain = start
+        && p.chars().all(rest)
+        && !RESERVED.iter().any(|r| r.eq_ignore_ascii_case(p))
+        && (driver != Driver::Postgres || !p.chars().any(|c| c.is_ascii_uppercase()));
+    if plain && !force {
+        p.to_string()
+    } else {
+        driver.quote(p)
+    }
 }
 
 impl CompletionProvider for SqlCompletion {
@@ -444,9 +454,13 @@ impl CompletionProvider for SqlCompletion {
                         range: range(start),
                         new_text: s.label,
                     },
-                    _ => TextEdit {
+                    Kind::Table => TextEdit {
                         range: range(if quoted { start - 1 } else { start }),
                         new_text: sql_name(&s.label, self.driver, quoted),
+                    },
+                    Kind::Column => TextEdit {
+                        range: range(if quoted { start - 1 } else { start }),
+                        new_text: ident(&s.label, self.driver, quoted),
                     },
                 })),
                 ..Default::default()
@@ -484,6 +498,16 @@ mod tests {
         // keywords: SELECT user FROM t would be current_user, not the column
         assert_eq!(sql_name("user", Driver::Postgres, false), "\"user\"");
         assert_eq!(sql_name("order", Driver::Mysql, false), "`order`");
+        // a dot is a schema only in a Postgres table name, before its first dot
+        assert_eq!(sql_name("a.b", Driver::Mysql, false), "`a.b`");
+        assert_eq!(
+            sql_name("public.my.t", Driver::Postgres, false),
+            "public.\"my.t\""
+        );
+        assert_eq!(
+            super::ident("price.usd", Driver::Postgres, false),
+            "\"price.usd\""
+        );
     }
 
     fn catalog() -> Catalog {

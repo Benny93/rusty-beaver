@@ -799,7 +799,11 @@ impl Session {
                 }
             }
         }
-        self.query("COMMIT")?;
+        // SQLite keeps the transaction open when COMMIT fails (deferred foreign key, busy)
+        if let Err(e) = self.query("COMMIT") {
+            let _ = self.query("ROLLBACK");
+            return Err(format!("{e}\n(rolled back)"));
+        }
         Ok(QueryResult {
             affected: Some(affected),
             ..Default::default()
@@ -2458,6 +2462,11 @@ mod tests {
             text(&s.query("SELECT count(*) FROM t").unwrap().rows[0][0]),
             "4"
         );
+        // A COMMIT that fails (deferred foreign key) rolls back instead of staying open.
+        let mut f = Session::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
+        f.query("PRAGMA foreign_keys=ON; CREATE TABLE p(id INTEGER PRIMARY KEY); CREATE TABLE c(p REFERENCES p(id) DEFERRABLE INITIALLY DEFERRED)").unwrap();
+        assert!(f.apply(&["INSERT INTO c VALUES (99)".into()]).is_err());
+        f.begin().expect("no transaction is left open");
         // No primary key: updates are refused, inserts are fine.
         assert!(
             c.to_sql(Driver::Sqlite, "t", &r.columns, &rows, &[])

@@ -176,6 +176,16 @@ def main():
             call("run_sql", {"connection": DB, "sql": "DELETE FROM missions"})
             call("rollback", {"connection": DB})
             assert q("SELECT count(*) FROM missions") == [(6,)]
+            # a COMMIT that SQLite refuses (deferred foreign key) leaves the transaction open
+            call("run_sql", {"connection": DB, "sql": "PRAGMA foreign_keys = ON"})
+            call("run_sql", {"connection": DB, "sql": "CREATE TABLE fk_p(id INTEGER PRIMARY KEY); CREATE TABLE fk_c(pid INTEGER REFERENCES fk_p(id) DEFERRABLE INITIALLY DEFERRED)"})
+            call("commit", {"connection": DB})
+            call("run_sql", {"connection": DB, "sql": "INSERT INTO fk_c VALUES (99)"})
+            call("commit", {"connection": DB}, ok=False)
+            assert [c for c in call("get_state")["connections"] if c["name"] == DB][0]["in_transaction"]
+            call("rollback", {"connection": DB})
+            call("run_sql", {"connection": DB, "sql": "DROP TABLE fk_c; DROP TABLE fk_p"})
+            call("commit", {"connection": DB})
             # a write that fails is not counted in the open transaction
             call("run_sql", {"connection": DB, "sql": "INSERT INTO lodges(id, name, river) VALUES (900, 'Tx Count', 'Main')"})
             call("run_sql", {"connection": DB, "sql": "INSERT INTO lodges(id, name, river) VALUES (900, 'Tx Count', 'Main')"}, ok=False)

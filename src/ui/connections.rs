@@ -360,7 +360,12 @@ impl AppView {
                         ),
                         Err(e) => e.clone(),
                     };
-                    (c.in_tx, c.tx_statements) = (false, 0);
+                    // SQLite keeps the transaction when it refuses a COMMIT (a deferred
+                    // foreign key): then Rollback must still be possible; Postgres and MySQL
+                    // end it either way
+                    if r.is_ok() || c.cfg.driver != Driver::Sqlite {
+                        (c.in_tx, c.tx_statements) = (false, 0);
+                    }
                 }
                 // Rolled-back rows should disappear from open table tabs.
                 if !commit {

@@ -149,6 +149,13 @@ def main():
             ddl = call("set_table_view", {"view": "ddl"})["ddl"]
             assert ddl.startswith("CREATE TABLE lodges"), ddl
             call("set_table_view", {"view": "data"})
+            # a row added and deleted again is no change, also in the reply
+            call("open_table", {"connection": DB, "table": "lodges"})
+            call("add_row", {"values": {"name": "Gone"}})
+            rows = call("get_results")["row_count"]
+            c = call("delete_row", {"row": rows - 1})
+            assert (c["pending_changes"], c["added_rows"], c["deleted_rows"]) == (0, 0, []), c
+            call("revert_changes")
             # table tabs have no search box: a search there could not be cleared by the user
             call("open_table", {"connection": DB, "table": "lodges"})
             assert "set_filter" in call("search_results", {"text": "x"}, ok=False)

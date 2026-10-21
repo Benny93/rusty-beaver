@@ -889,9 +889,10 @@ impl AppView {
         let c = &g.changes;
         json!({
             "pending_changes": c.count(),
-            "edited_cells": c.cells.iter().map(|((r, col), v)| json!({ "row": g.order.iter().position(|x| x == r), "column": g.r.columns[*col], "value": v })).collect::<Vec<_>>(),
-            "deleted_rows": c.deleted.iter().map(|r| g.order.iter().position(|x| x == r)).collect::<Vec<_>>(),
-            "added_rows": c.inserted.len(),
+            // a row added and deleted again is no change (as in `pending_changes`)
+            "edited_cells": c.cells.iter().filter(|((r, _), _)| !(c.inserted.contains(r) && c.deleted.contains(r))).map(|((r, col), v)| json!({ "row": g.order.iter().position(|x| x == r), "column": g.r.columns[*col], "value": v })).collect::<Vec<_>>(),
+            "deleted_rows": c.deleted.difference(&c.inserted).map(|r| g.order.iter().position(|x| x == r)).collect::<Vec<_>>(),
+            "added_rows": c.inserted.difference(&c.deleted).count(),
         })
     }
 

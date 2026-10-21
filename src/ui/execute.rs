@@ -229,17 +229,19 @@ impl AppView {
         let mysql_ddl = mysql && heads.first().is_some_and(ddl);
         let script_ddl = mysql && heads.iter().skip(1).any(ddl);
         let one_statement = heads.len() <= 1;
-        let ends = |(w, _): &(String, String)| matches!(w.as_str(), "COMMIT" | "ROLLBACK" | "END");
-        // "UPDATE …; COMMIT" ends the transaction too, not only a script starting with COMMIT
+        // COMMIT / ROLLBACK end the transaction (ROLLBACK TO SAVEPOINT does not); END only as
+        // the first statement, as it also closes trigger and BEGIN ATOMIC bodies
+        let ends = |(w1, w2): &(String, String)| w1 == "COMMIT" || w1 == "ROLLBACK" && w2 != "TO";
+        let first_ends = heads.first().is_some_and(|h| ends(h) || h.0 == "END");
+        // "UPDATE …; COMMIT" ends it too, once the script ran through
         // ponytail: statements after the COMMIT run outside a transaction, as typed
-        let ends_tx = heads.iter().any(ends);
+        let later_ends = heads.iter().skip(1).any(ends);
         // Smart commit: only a change opens the transaction; reads run inside an open one.
         let write = db::is_write(&sql);
-        let need_begin =
-            manual && !in_tx && write && !heads.first().is_some_and(ends) && !mysql_ddl;
+        let need_begin = manual && !in_tx && write && !first_ends && !mysql_ddl;
         if manual && let Some(i) = self.conn_ix(conn) {
             let c = &mut self.conns[i];
-            if ends_tx {
+            if first_ends {
                 (c.in_tx, c.tx_statements) = (false, 0);
             } else if write && !mysql_ddl {
                 (c.in_tx, c.tx_statements) = (true, c.tx_statements + 1);
@@ -257,6 +259,14 @@ impl AppView {
             window,
             cx,
             Box::new(move |v, r, window, cx| {
+                // a script that failed before its COMMIT leaves the transaction open
+                if manual
+                    && later_ends
+                    && r.is_ok()
+                    && let Some(i) = v.conn_ix(conn)
+                {
+                    (v.conns[i].in_tx, v.conns[i].tx_statements) = (false, 0);
+                }
                 if manual
                     && (mysql_ddl || script_ddl)
                     && let Some(i) = v.conn_ix(conn)

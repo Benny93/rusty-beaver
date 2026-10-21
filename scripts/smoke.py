@@ -159,6 +159,10 @@ def main():
             call("edit_connection", {"connection": DB, "production": False})
             call("commit", {"connection": DB})
             assert q("SELECT count(*) FROM lodges WHERE name = 'Prod Toggle'") == [(1,)]
+            # a script that fails before its COMMIT leaves the transaction it opened open
+            call("run_sql", {"connection": DB, "sql": "UPDATE lodges SET name = name WHERE nope = 1; COMMIT"}, ok=False)
+            assert [c for c in call("get_state")["connections"] if c["name"] == DB][0]["in_transaction"]
+            call("rollback", {"connection": DB})
             # a COMMIT at the end of a script ends the transaction it opened
             call("run_sql", {"connection": DB, "sql": "INSERT INTO lodges(name, river) VALUES ('Tx Lodge', 'Main'); COMMIT"})
             assert not [c for c in call("get_state")["connections"] if c["name"] == DB][0]["in_transaction"]

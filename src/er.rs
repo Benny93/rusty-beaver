@@ -48,19 +48,53 @@ impl Diagram {
     fn levels(&self) -> HashMap<String, usize> {
         let mut level: HashMap<String, usize> =
             self.tables.iter().map(|t| (t.name.clone(), 0)).collect();
-        // Longest path by relaxation; capped by the table count so cycles end.
+        // (child, parent) of every link between two shown tables
+        let edges: Vec<(&str, &str)> = self
+            .links
+            .iter()
+            .filter(|l| {
+                l.table != l.ref_table
+                    && level.contains_key(&l.table)
+                    && level.contains_key(&l.ref_table)
+            })
+            .map(|l| (l.table.as_str(), l.ref_table.as_str()))
+            .collect();
+        // A cycle (a→b→a) loses one edge, found by a depth-first walk: the rest has no cycle,
+        // so a table that references the cycle still lands right of it.
+        fn walk<'a>(
+            n: &'a str,
+            edges: &[(&'a str, &'a str)],
+            state: &mut HashMap<&'a str, u8>, // 1 on the walk's path, 2 done
+            back: &mut Vec<usize>,
+        ) {
+            state.insert(n, 1);
+            for (i, &(c, p)) in edges.iter().enumerate() {
+                if c == n {
+                    match state.get(p) {
+                        Some(1) => back.push(i),
+                        None => walk(p, edges, state, back),
+                        _ => {}
+                    }
+                }
+            }
+            state.insert(n, 2);
+        }
+        let (mut state, mut back) = (HashMap::new(), vec![]);
+        for t in &self.tables {
+            if !state.contains_key(t.name.as_str()) {
+                walk(&t.name, &edges, &mut state, &mut back);
+            }
+        }
+        // Longest path by relaxation over what is left (bounded by the table count anyway).
         for _ in 0..self.tables.len() {
             let mut changed = false;
-            for l in &self.links {
-                if l.table == l.ref_table {
+            for (i, &(c, p)) in edges.iter().enumerate() {
+                if back.contains(&i) {
                     continue;
                 }
-                let (Some(&parent), Some(&child)) = (level.get(&l.ref_table), level.get(&l.table))
-                else {
-                    continue;
-                };
-                if child < parent + 1 && parent + 1 < self.tables.len() {
-                    level.insert(l.table.clone(), parent + 1);
+                let (parent, child) = (level[p], level[c]);
+                if child < parent + 1 {
+                    level.insert(c.to_string(), parent + 1);
                     changed = true;
                 }
             }
@@ -171,6 +205,24 @@ mod tests {
             ref_table: ref_table.into(),
             ref_column: String::new(),
         }
+    }
+
+    #[test]
+    fn a_table_referencing_a_cycle_is_right_of_it() {
+        let d = Diagram::new(
+            vec![
+                t("a", &["id", "b_id"]),
+                t("b", &["id", "a_id"]),
+                t("c", &["id", "b_id"]),
+            ],
+            vec![
+                fk("a", "b_id", "b"),
+                fk("b", "a_id", "a"),
+                fk("c", "b_id", "b"),
+            ],
+        );
+        let x = |n: &str| d.pos[n].0;
+        assert!(x("c") > x("b"), "c references b");
     }
 
     #[test]

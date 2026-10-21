@@ -148,8 +148,10 @@ def main():
             time.sleep(0.5)  # the catalog loads in the background
             done = lambda: [c["label"] for c in call("sql_completions", {"connection": DB, "sql": "SELECT zap", "offset": 10})]
             assert "zap_col" in done(), done()
+            call("describe_table", {"connection": DB, "table": "gone"})  # selected in the navigator
             call("run_sql", {"connection": DB, "sql": "DROP TABLE gone"})
             call("refresh_connection", {"connection": DB})
+            assert call("get_state")["selected"]["table"] is None  # not a table that is gone
             time.sleep(0.5)
             assert "zap_col" not in done(), done()
 

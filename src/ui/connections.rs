@@ -446,6 +446,14 @@ impl AppView {
                 let out = r.map(|tables| {
                     let j = tables_json(&tables);
                     if let Some(ix) = v.conn_ix(id) {
+                        // a selected table that is gone is selected no more
+                        if let Some((sel, t)) = &mut v.selected
+                            && *sel == id
+                            && t.as_ref()
+                                .is_some_and(|t| !tables.iter().any(|(n, _)| n == t))
+                        {
+                            *t = None;
+                        }
                         let c = &mut v.conns[ix];
                         c.tables = tables;
                         c.columns.clear();

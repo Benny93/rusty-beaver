@@ -180,10 +180,38 @@ fn aliases(text: &str) -> HashMap<String, String> {
     out
 }
 
+/// The text ends inside a '…' string or a comment (where no name is typed).
+fn in_literal(s: &str) -> bool {
+    let b = s.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\'' => match s[i + 1..].find('\'') {
+                Some(n) => i += n + 1,
+                None => return true,
+            },
+            b'-' if b.get(i + 1) == Some(&b'-') => match s[i..].find('\n') {
+                Some(n) => i += n,
+                None => return true,
+            },
+            b'/' if b.get(i + 1) == Some(&b'*') => match s[i + 2..].find("*/") {
+                Some(n) => i += n + 3,
+                None => return true,
+            },
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
 /// Suggestions for the word ending at byte `offset`; returns where that word starts.
 pub fn suggest(text: &str, offset: usize, catalog: &Catalog) -> (usize, Vec<Suggestion>) {
     // Offsets come from agents too: never cut inside a multi-byte character.
     let before = &text[..text.floor_char_boundary(offset)];
+    if in_literal(before) {
+        return (before.len(), vec![]);
+    }
     // aliases of the statement at the cursor, not of others in the editor that reuse a name
     // ponytail: split at every ;, also one inside a string
     let at = before.len();
@@ -547,6 +575,21 @@ mod tests {
             }
             assert_eq!(c.columns["dams"][0].0, "public_dams");
         }
+    }
+
+    #[test]
+    fn nothing_inside_strings_and_comments() {
+        let c = catalog();
+        for text in [
+            "SELECT * FROM beavers WHERE name = 'lo",
+            "SELECT 1 -- se",
+            "SELECT /* lo",
+        ] {
+            assert!(suggest(text, text.len(), &c).1.is_empty(), "{text}");
+        }
+        // after them it goes on
+        let text = "SELECT 'a', /* x */ na";
+        assert!(!suggest(text, text.len(), &c).1.is_empty());
     }
 
     #[test]

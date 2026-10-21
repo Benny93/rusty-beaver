@@ -380,7 +380,12 @@ impl AppView {
                             Ok(_) => {
                                 v.status = if manual { format!("Saved: {n} statement(s) in the open transaction; Commit to keep them") } else { format!("Saved: {n} statement(s) committed") };
                                 match ix {
-                                    Some(ix) => v.reload_table(ix, window, cx, done),
+                                    Some(ix) => {
+                                        v.tabs[ix].grid.update(cx, |g, _| {
+                                            g.delegate_mut().changes = Default::default() // saved
+                                        });
+                                        v.reload_table(ix, window, cx, done)
+                                    }
                                     None => done(v, Ok(json!({ "saved": n })), window, cx),
                                 }
                             }
@@ -436,7 +441,9 @@ impl AppView {
         let Some((id, col)) = t.editing.take() else {
             return;
         };
-        if let Some(v) = value {
+        // Enter on a NULL cell without typing keeps it NULL (not '')
+        let was_null = t.grid.read(cx).delegate().value(id, col) == "NULL";
+        if let Some(v) = value.filter(|v| !(was_null && v.is_empty())) {
             self.set_cell(tab, id, col, Some(v), cx);
             self.status = "Cell changed (Cmd/Ctrl+S saves)".into();
         }

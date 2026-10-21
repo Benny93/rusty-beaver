@@ -93,6 +93,9 @@ def main():
             assert q("SELECT river FROM lodges WHERE id = 1") == [("Yukon River",)]
             assert q("SELECT count(*) FROM lodges") == [(5,)]
             assert call("set_filter", {"filter": "river = 'Elbe'"})["row_count"] == 1
+            call("edit_cell", {"row": 0, "column": "river", "value": "Rhine"})
+            assert "pending changes" in call("set_filter", {"filter": ""}, ok=False)  # edit kept
+            call("revert_changes")
             call("explain")  # the plan opens in a script tab, not in the editable table grid
             active = [t for t in call("get_state")["tabs"] if t["active"]]
             assert active[0]["title"].startswith("Script-"), active

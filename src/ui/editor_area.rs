@@ -584,7 +584,7 @@ impl AppView {
                         })
                         .label(label)
                         .on_click(cx.listener(move |v, _, _, cx| {
-                            let _ = v.show_result(ix, i, cx);
+                            let _ = v.show_result(ix, i, 50, cx);
                         }))
                 }))
         });

@@ -447,6 +447,13 @@ impl AppView {
         let TabKind::Table(table) = &t.kind else {
             return done(self, Err("not a table tab".into()), window, cx);
         };
+        // loading replaces the rows, and with them the unsaved edits
+        if !t.grid.read(cx).delegate().changes.is_empty() {
+            let e = format!("{table}: save or revert the pending changes first");
+            self.status = e.clone();
+            cx.notify();
+            return done(self, Err(e), window, cx);
+        }
         let Some(ix) = self.conn_ix(t.conn) else {
             return done(self, Err("connection is gone".into()), window, cx);
         };
@@ -496,6 +503,7 @@ impl AppView {
         &mut self,
         tab: usize,
         i: usize,
+        max_rows: usize,
         cx: &mut Context<Self>,
     ) -> Result<Value, String> {
         let t = self.tabs.get_mut(tab).ok_or("no such tab")?;
@@ -503,8 +511,11 @@ impl AppView {
             "no result {i}; the last run produced {}",
             t.results.len()
         ))?;
+        if !t.grid.read(cx).delegate().changes.is_empty() {
+            return Err("save or revert the pending changes first".into());
+        }
         t.result_ix = i;
-        let j = result_json(&r, 50);
+        let j = result_json(&r, max_rows);
         t.grid.update(cx, |g, cx| {
             g.delegate_mut().set(r);
             g.refresh(cx);

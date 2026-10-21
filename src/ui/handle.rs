@@ -155,8 +155,12 @@ impl AppView {
                 )
             }
             "get_results" if a["index"].is_u64() => {
-                let r =
-                    self.show_result(self.active, a["index"].as_u64().unwrap_or(0) as usize, cx);
+                let r = self.show_result(
+                    self.active,
+                    a["index"].as_u64().unwrap_or(0) as usize,
+                    max_rows,
+                    cx,
+                );
                 now(self, r, window, cx, done)
             }
             "get_results" => {
@@ -244,23 +248,39 @@ impl AppView {
                 now(self, r, window, cx, done)
             }
             "add_row" => {
-                let r = self
-                    .grid_op(GridOp::AddRow, window, cx, Box::new(|_, _, _, _| {}))
-                    .and_then(|_| {
-                        let ix = self.active;
-                        self.finish_edit(ix, None, window, cx);
-                        let g = self.tabs[ix].grid.read(cx).delegate();
-                        let id = g.r.rows.len() - 1;
-                        let cols = g.r.columns.clone();
-                        for (k, v) in a["values"].as_object().into_iter().flatten() {
-                            let col = cols
-                                .iter()
-                                .position(|c| c == k)
-                                .ok_or(format!("no column {k:?}; have {}", cols.join(", ")))?;
-                            self.set_cell(ix, id, col, v.as_str().map(String::from), cx);
-                        }
-                        Ok(self.changes_json(cx))
-                    });
+                // every column checked before the row exists: a bad name adds nothing
+                let cols = self
+                    .tabs
+                    .get(self.active)
+                    .map(|t| t.grid.read(cx).delegate().r.columns.clone())
+                    .unwrap_or_default();
+                let values: Result<Vec<(usize, Option<String>)>, String> = a["values"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .map(|(k, v)| {
+                        let col = cols
+                            .iter()
+                            .position(|c| c.eq_ignore_ascii_case(k))
+                            .ok_or(format!("no column {k:?}; have {}", cols.join(", ")))?;
+                        let v = match v {
+                            Value::Null => None,
+                            Value::String(s) => Some(s.clone()),
+                            v => Some(v.to_string()), // 42, true
+                        };
+                        Ok((col, v))
+                    })
+                    .collect();
+                let r = values.and_then(|values| {
+                    self.grid_op(GridOp::AddRow, window, cx, Box::new(|_, _, _, _| {}))?;
+                    let ix = self.active;
+                    self.finish_edit(ix, None, window, cx);
+                    let id = self.tabs[ix].grid.read(cx).delegate().r.rows.len() - 1;
+                    for (col, v) in values {
+                        self.set_cell(ix, id, col, v, cx);
+                    }
+                    Ok(self.changes_json(cx))
+                });
                 now(self, r, window, cx, done)
             }
             "save_changes" => {

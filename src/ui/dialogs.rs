@@ -365,12 +365,10 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let mut waiting = vec![];
         if let Some(c) = self.conns.iter_mut().find(|c| c.id == id) {
             db::forget_password(&c.cfg);
-            // callers waiting for its connect get an answer
-            for w in std::mem::take(&mut c.waiting) {
-                w(self, Err("connection is gone".into()), window, cx);
-            }
+            waiting = std::mem::take(&mut c.waiting);
         }
         self.conns.retain(|c| c.id != id);
         let active = self.tab_key(self.active);
@@ -384,6 +382,11 @@ impl AppView {
         }
         self.save();
         self.save_session_soon(cx);
+        // Callers waiting for its connect get an answer, once it is gone: earlier, one could
+        // queue itself again on the connection.
+        for w in waiting {
+            w(self, Err("connection is gone".into()), window, cx);
+        }
         cx.notify();
     }
 

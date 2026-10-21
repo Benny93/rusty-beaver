@@ -651,18 +651,25 @@ impl Session {
     /// takes back the ones before it too; committing is up to the user.
     pub fn apply_in(&mut self, statements: &[String], own_tx: bool) -> Result<QueryResult, String> {
         if !own_tx {
-            self.query("SAVEPOINT rusty_beaver")?;
+            if self.query("SAVEPOINT rusty_beaver").is_err() {
+                // no transaction after all (DDL committed it, or COMMIT typed in a script)
+                return self.apply(statements);
+            }
             let mut affected = 0;
             for s in statements {
                 match self.change(s) {
                     Ok(n) => affected += n,
                     Err(e) => {
                         let _ = self.query("ROLLBACK TO SAVEPOINT rusty_beaver");
+                        // SQLite: an outermost savepoint is a transaction of its own
+                        let _ = self.query("RELEASE SAVEPOINT rusty_beaver");
                         return Err(format!("{e}\n(none of them kept; in: {s})"));
                     }
                 }
             }
-            self.query("RELEASE SAVEPOINT rusty_beaver")?;
+            // every statement worked; MySQL may have no savepoint left to release (DDL ended
+            // the transaction), which changes nothing
+            let _ = self.query("RELEASE SAVEPOINT rusty_beaver");
             return Ok(QueryResult {
                 affected: Some(affected),
                 ..Default::default()
@@ -1085,6 +1092,9 @@ pub fn write_atomic(path: &std::path::Path, data: impl AsRef<[u8]>) -> std::io::
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     std::fs::write(&tmp, data)?;
+    if let Ok(m) = std::fs::metadata(path) {
+        let _ = std::fs::set_permissions(&tmp, m.permissions()); // keep a chmod 600
+    }
     std::fs::rename(&tmp, path)
 }
 
@@ -1130,12 +1140,15 @@ pub fn load_connections() -> (Vec<ConnConfig>, bool, Option<String>) {
     let path = connections_path();
     let mut note = None;
     let mut list: Vec<ConnConfig> = match std::fs::read_to_string(&path)
-        .ok()
-        .map(|t| serde_json::from_str(&t))
+        .map_err(|e| e.to_string())
+        .and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string()))
     {
-        Some(Ok(v)) => v,
+        Ok(v) => v,
         bad => {
-            if let Some(Err(e)) = bad {
+            // only a missing file is a first start; any other error keeps the file aside
+            if let Err(e) = bad.as_ref().map(|_| ())
+                && path.exists()
+            {
                 let aside = path.with_extension("json.invalid");
                 note = Some(match std::fs::rename(&path, &aside) {
                     Ok(()) => format!(
@@ -1922,6 +1935,11 @@ mod tests {
                 .contains("none of them kept")
         );
         s.query("COMMIT").unwrap();
+        assert_eq!(s.query("SELECT count(*) FROM t").unwrap().rows[0][0], "4");
+        // Not in a transaction after all (COMMIT typed in a script): still all or nothing,
+        // and no transaction is left open.
+        assert!(s.apply_in(&bad, false).is_err());
+        assert!(s.query("COMMIT").is_err(), "no transaction is active");
         assert_eq!(s.query("SELECT count(*) FROM t").unwrap().rows[0][0], "4");
         // No primary key: updates are refused, inserts are fine.
         assert!(

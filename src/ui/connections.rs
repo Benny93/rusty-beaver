@@ -489,8 +489,10 @@ impl AppView {
                 Box::new(move |v, r, window, cx| match r {
                     Ok(_) => v.with_session_retry(id, work, retry, window, cx, done),
                     Err(e) => {
-                        // not connected: no transaction can be open
-                        if let Some(ix) = v.conn_ix(id) {
+                        // not connected: no transaction can be open (unless a newer
+                        // connect made a session meanwhile)
+                        if let Some(ix) = v.conn_ix(id).filter(|&ix| v.conns[ix].session.is_none())
+                        {
                             (v.conns[ix].in_tx, v.conns[ix].tx_statements) = (false, 0);
                         }
                         done(v, Err(e), window, cx)

@@ -267,6 +267,88 @@ pub struct SqlCompletion {
     pub driver: Driver,
 }
 
+/// Words Postgres or MySQL reserve that are also common names (user, order, key): unquoted
+/// they are no column (SELECT user is current_user).
+/// ponytail: the usual suspects, not each dialect's full list
+const RESERVED: &[&str] = &[
+    "ALL",
+    "AND",
+    "ANY",
+    "AS",
+    "ASC",
+    "BETWEEN",
+    "BY",
+    "CASE",
+    "CHECK",
+    "COLUMN",
+    "CONSTRAINT",
+    "CREATE",
+    "CROSS",
+    "CURRENT_DATE",
+    "CURRENT_TIME",
+    "CURRENT_USER",
+    "DEFAULT",
+    "DELETE",
+    "DESC",
+    "DISTINCT",
+    "DROP",
+    "ELSE",
+    "END",
+    "EXISTS",
+    "FALSE",
+    "FOR",
+    "FOREIGN",
+    "FROM",
+    "FULL",
+    "GRANT",
+    "GROUP",
+    "HAVING",
+    "IN",
+    "INDEX",
+    "INNER",
+    "INSERT",
+    "INTERVAL",
+    "INTO",
+    "IS",
+    "JOIN",
+    "KEY",
+    "KEYS",
+    "LEFT",
+    "LIKE",
+    "LIMIT",
+    "NOT",
+    "NULL",
+    "OFFSET",
+    "ON",
+    "OR",
+    "ORDER",
+    "OUTER",
+    "PRIMARY",
+    "RANGE",
+    "READ",
+    "REFERENCES",
+    "RIGHT",
+    "ROWS",
+    "SELECT",
+    "SET",
+    "SHOW",
+    "TABLE",
+    "THEN",
+    "TO",
+    "TRUE",
+    "UNION",
+    "UNIQUE",
+    "UPDATE",
+    "USER",
+    "USING",
+    "VALUES",
+    "WHEN",
+    "WHERE",
+    "WINDOW",
+    "WITH",
+    "WRITE",
+];
+
 /// A table or column name as `driver` needs it in SQL: parts that are no plain identifier
 /// there get quoted (Postgres "Orders", MySQL `my table`); `force` quotes every part (the user
 /// already typed the opening quote).
@@ -281,6 +363,7 @@ pub fn sql_name(name: &str, driver: Driver, force: bool) -> String {
             // Postgres folds unquoted names to lower case: Orders would become orders
             let plain = start
                 && p.chars().all(rest)
+                && !RESERVED.iter().any(|r| r.eq_ignore_ascii_case(p))
                 && (driver != Driver::Postgres || !p.chars().any(|c| c.is_ascii_uppercase()));
             if plain && !force {
                 p.to_string()
@@ -367,6 +450,9 @@ mod tests {
         assert_eq!(sql_name("Orders", Driver::Mysql, false), "Orders");
         assert_eq!(sql_name("my table", Driver::Mysql, false), "`my table`");
         assert_eq!(sql_name("beavers", Driver::Sqlite, true), "\"beavers\""); // typed "be
+        // keywords: SELECT user FROM t would be current_user, not the column
+        assert_eq!(sql_name("user", Driver::Postgres, false), "\"user\"");
+        assert_eq!(sql_name("order", Driver::Mysql, false), "`order`");
     }
 
     fn catalog() -> Catalog {

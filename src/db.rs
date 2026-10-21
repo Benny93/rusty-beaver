@@ -1504,11 +1504,19 @@ fn writes(sql: &str, mysql: bool) -> bool {
     // Only as a statement's first word: "comment" and "lock" are column names too.
     const LEADING: &[&str] = &[
         "REPLACE", "COPY", "CALL", "DO", "LOAD", "VACUUM", "REINDEX", "CLUSTER", "COMMENT", "LOCK",
-        "IMPORT", "REFRESH", "ANALYZE", "OPTIMIZE", "REPAIR", "FLUSH",
+        "IMPORT", "REFRESH", "ANALYZE", "OPTIMIZE", "REPAIR", "FLUSH", "RESET", "DISCARD",
+    ];
+    // Settings that switch read-only off: SET default_transaction_read_only = off, PRAGMA
+    // query_only = OFF (also READ WRITE below, as in BEGIN READ WRITE).
+    const UNLOCKS: &[&str] = &[
+        "QUERY_ONLY",
+        "DEFAULT_TRANSACTION_READ_ONLY",
+        "TRANSACTION_READ_ONLY",
     ];
     let b = sql.as_bytes();
     let mut i = 0;
     let mut first = true;
+    let (mut prev, mut pragma) = ("", false);
     while i < b.len() {
         match b[i] {
             b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
@@ -1529,7 +1537,9 @@ fn writes(sql: &str, mysql: bool) -> bool {
                     continue;
                 }
             }
-            b';' => first = true,
+            b';' => (first, pragma) = (true, false),
+            // PRAGMA user_version = 9 changes the file; PRAGMA table_info(t) only reads
+            b'=' if pragma => return true,
             c if c.is_ascii_alphabetic() => {
                 let start = i;
                 while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
@@ -1537,10 +1547,17 @@ fn writes(sql: &str, mysql: bool) -> bool {
                 }
                 let word = &sql[start..i];
                 let is = |list: &[&str]| list.iter().any(|w| w.eq_ignore_ascii_case(word));
-                if is(WRITES) || first && is(LEADING) {
+                if is(WRITES)
+                    || first && is(LEADING)
+                    || is(UNLOCKS)
+                    || word.eq_ignore_ascii_case("WRITE") && prev.eq_ignore_ascii_case("READ")
+                {
                     return true;
                 }
-                first = false;
+                if first {
+                    pragma = word.eq_ignore_ascii_case("PRAGMA");
+                }
+                (first, prev) = (false, word);
                 continue;
             }
             _ => {}
@@ -2589,6 +2606,19 @@ mod tests {
         assert!(!is_write(r"SELECT 'a\', 'b' -- update"));
         assert!(is_write("SELECT * INTO newt FROM t"));
         assert!(!is_write("SELECT id, comment, lock FROM reviews")); // column names
+        // switching read-only off (or resetting it) is a write; reading settings is not
+        for unlock in [
+            "RESET ALL",
+            "DISCARD ALL",
+            "BEGIN READ WRITE",
+            "SET SESSION TRANSACTION READ WRITE",
+            "SET default_transaction_read_only = off",
+            "PRAGMA query_only = OFF",
+            "PRAGMA user_version = 9",
+        ] {
+            assert!(is_write(unlock), "{unlock}");
+        }
+        assert!(!is_write("PRAGMA table_info(t)") && !is_write("SET search_path = app"));
         for maintenance in [
             "REFRESH MATERIALIZED VIEW mv",
             "ANALYZE t",

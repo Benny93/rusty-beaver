@@ -565,7 +565,12 @@ fn sqlite_path(database: &str) -> PathBuf {
 /// empty database (a typo would leave one behind and report success).
 pub fn test_connect(c: &ConnConfig) -> Result<Session, String> {
     if c.driver == Driver::Sqlite && c.database != ":memory:" {
-        let path = sqlite_path(&c.database);
+        // file:/path/app.db?mode=ro (a URI, as connect opens it): its path part
+        let db = c.database.trim();
+        let db = db
+            .strip_prefix("file:")
+            .map_or(db, |u| u.split(['?', '#']).next().unwrap_or(u));
+        let path = sqlite_path(db);
         if !path.exists() {
             return Err(format!("{}: no such file", path.display()));
         }
@@ -2982,6 +2987,15 @@ mod tests {
         };
         assert!(connect(&ro).is_err());
         assert!(!typo.exists());
+        // a file: URI is tested like connect opens it (the existence check reads it as a path)
+        let real = std::env::temp_dir().join(format!("rb-uri-{}.db", std::process::id()));
+        rusqlite::Connection::open(&real).unwrap();
+        let uri = ConnConfig {
+            database: format!("file:{}?mode=ro", real.display()),
+            ..Default::default()
+        };
+        assert!(test_connect(&uri).is_ok());
+        let _ = std::fs::remove_file(&real);
         // no path is SQLite's throwaway database: everything written there would be gone
         assert!(
             connect(&ConnConfig::default())

@@ -43,7 +43,12 @@ impl AppView {
                     .map(|id| json!({ "added": id }));
                 now(self, r, window, cx, done)
             }
-            "delete_connection" => match self.conn_by_name(&s("connection")) {
+            "delete_connection" => match self.conn_by_name(&s("connection")).and_then(|id| {
+                let tabs: Vec<usize> = (0..self.tabs.len())
+                    .filter(|&i| self.tabs[i].conn == id)
+                    .collect();
+                self.unsaved_edits(tabs, cx).map(|_| id)
+            }) {
                 Ok(id) => {
                     self.delete_connection(id, window, cx);
                     now(

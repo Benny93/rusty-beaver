@@ -428,6 +428,13 @@ impl AppView {
         let Some(name) = self.conn_ix(id).map(|i| self.conns[i].cfg.name.clone()) else {
             return;
         };
+        // its tabs close with it: not over unsaved grid edits (the status bar says which)
+        let tabs: Vec<usize> = (0..self.tabs.len())
+            .filter(|&i| self.tabs[i].conn == id)
+            .collect();
+        if self.unsaved_edits(tabs, cx).is_err() {
+            return;
+        }
         let answer = window.prompt(
             PromptLevel::Warning,
             &format!("Delete connection \"{name}\"?"),

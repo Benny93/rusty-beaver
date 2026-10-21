@@ -130,9 +130,11 @@ impl Driver {
                 "SELECT name, upper(type) FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name"
             }
             Driver::Postgres => {
-                // materialized views are not in information_schema
+                // materialized views are not in information_schema (pg_class, not pg_matviews:
+                // Redshift and old servers have no pg_matviews, and would fail to connect)
                 "SELECT table_schema || '.' || table_name, CASE table_type WHEN 'BASE TABLE' THEN 'TABLE' ELSE table_type END FROM information_schema.tables WHERE table_schema NOT IN ('pg_catalog','information_schema') \
-                 UNION ALL SELECT schemaname || '.' || matviewname, 'MATERIALIZED VIEW' FROM pg_matviews ORDER BY 1"
+                 UNION ALL SELECT n.nspname || '.' || c.relname, 'MATERIALIZED VIEW' FROM pg_class c \
+                 JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind = 'm' ORDER BY 1"
             }
             Driver::Mysql => {
                 "SELECT table_name, CASE table_type WHEN 'BASE TABLE' THEN 'TABLE' ELSE table_type END FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY 1"

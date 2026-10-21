@@ -115,7 +115,8 @@ impl Driver {
     fn foreign_keys_sql(self) -> &'static str {
         match self {
             Driver::Sqlite => {
-                "SELECT m.name, p.\"from\", p.\"table\", coalesce(p.\"to\", '') FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) p WHERE m.type = 'table' ORDER BY 1"
+                // REFERENCES t without columns means t's primary key
+                "SELECT m.name, p.\"from\", p.\"table\", coalesce(p.\"to\", (SELECT k.name FROM pragma_table_info(p.\"table\") k WHERE k.pk = p.seq + 1), '') FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) p WHERE m.type = 'table' ORDER BY 1"
             }
             Driver::Postgres => {
                 // pg_constraint pairs the columns of composite keys, and constraint names are
@@ -500,7 +501,7 @@ pub struct ForeignKey {
     pub table: String,
     pub column: String,
     pub ref_table: String,
-    /// Empty when SQLite's REFERENCES names no column (the primary key is meant).
+    /// Empty when SQLite's REFERENCES names no column and the table has no primary key.
     pub ref_column: String,
 }
 
@@ -1767,7 +1768,7 @@ mod tests {
         .unwrap();
         let fk = s.columns("c").unwrap();
         assert_eq!(fk.rows[1][3..], ["FK", "t.id"]);
-        assert_eq!(fk.rows[2][3..], ["FK", "t"]);
+        assert_eq!(fk.rows[2][3..], ["FK", "t.id"]); // bare REFERENCES t: its primary key
         assert_eq!(s.foreign_keys().unwrap().len(), 2);
         assert!(s.query("SELEC nope").is_err());
     }

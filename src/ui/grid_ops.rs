@@ -280,13 +280,13 @@ impl AppView {
                     .collect();
                 // columns the table does not list are generated (SQLite's table_info hides them):
                 // no value to insert either
-                let listed: Vec<String> = t
-                    .columns
-                    .read(cx)
-                    .delegate()
-                    .r
-                    .rows
+                let cols = &t.columns.read(cx).delegate().r.rows;
+                let listed: Vec<String> =
+                    cols.iter().map(|c| db::text(&c[0]).to_string()).collect();
+                // Postgres and MySQL mark them in the type
+                let marked: Vec<String> = cols
                     .iter()
+                    .filter(|c| db::text(&c[1]).ends_with(db::GENERATED))
                     .map(|c| db::text(&c[0]).to_string())
                     .collect();
                 let new = grid.update(cx, |g, cx| {
@@ -307,7 +307,8 @@ impl AppView {
                     // added since the tab opened is missing there as well
                     let generated = driver == Driver::Sqlite
                         && !listed.is_empty()
-                        && !listed.contains(&columns[c]);
+                        && !listed.contains(&columns[c])
+                        || marked.contains(&columns[c]);
                     if let Some(v) =
                         v.filter(|v| !key.contains(&c) && !generated && !db::is_blob_text(v))
                     {

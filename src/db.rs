@@ -181,7 +181,9 @@ impl Driver {
                     // format_type: varchar(50), numeric(10,2), int[], enum names (data_type has
                     // character varying, numeric, ARRAY, USER-DEFINED)
                     "SELECT c.column_name, (SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a \
-                     WHERE a.attrelid = (quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))::regclass AND a.attname = c.column_name), c.is_nullable, CASE WHEN k.column_name IS NOT NULL THEN 'PK' ELSE '' END \
+                     WHERE a.attrelid = (quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))::regclass AND a.attname = c.column_name) \
+                     || CASE WHEN c.is_generated = 'ALWAYS' OR c.identity_generation = 'ALWAYS' THEN ' generated' ELSE '' END, \
+                     c.is_nullable, CASE WHEN k.column_name IS NOT NULL THEN 'PK' ELSE '' END \
                      FROM information_schema.columns c LEFT JOIN (SELECT ku.column_name FROM information_schema.table_constraints tc \
                      JOIN information_schema.key_column_usage ku ON tc.constraint_name = ku.constraint_name AND tc.table_schema = ku.table_schema \
                      WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = {s} AND tc.table_name = {t}) k ON k.column_name = c.column_name \
@@ -191,12 +193,18 @@ impl Driver {
                 )
             }
             Driver::Mysql => format!(
-                "SELECT column_name, column_type, is_nullable, IF(column_key = 'PRI', 'PK', '') FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = {} ORDER BY ordinal_position",
+                // (DEFAULT_GENERATED is a default expression, not a generated column)
+                "SELECT column_name, CONCAT(column_type, IF(extra IN ('VIRTUAL GENERATED', 'STORED GENERATED'), ' generated', '')), \
+                is_nullable, IF(column_key = 'PRI', 'PK', '') FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = {} ORDER BY ordinal_position",
                 lit(table)
             ),
         }
     }
 }
+
+/// What the Columns view adds to the type of a column that cannot be written (generated,
+/// identity GENERATED ALWAYS).
+pub const GENERATED: &str = " generated";
 
 /// Pending grid edits of a table editor, by original row index.
 #[derive(Default, Clone, Debug)]
@@ -710,7 +718,7 @@ impl Session {
                 format!(
                     "    {} {}{}{}",
                     driver.quote(text(&c[0])),
-                    text(&c[1]),
+                    text(&c[1]).trim_end_matches(GENERATED),
                     if text(&c[2]) == "NO" { " NOT NULL" } else { "" },
                     extras.get(text(&c[0])).map_or("", String::as_str)
                 )

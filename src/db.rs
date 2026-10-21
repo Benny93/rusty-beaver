@@ -1361,6 +1361,8 @@ fn param_spans(sql: &str) -> Vec<(std::ops::Range<usize>, String)> {
             }
             b':' if b.get(i + 1) == Some(&b':') => i += 1,
             b':' if i > 0 && b[i - 1] == b':' => {}
+            // arr[2:n], arr[i:j]: a slice, not a parameter
+            b':' if i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b']') => {}
             b':' if b
                 .get(i + 1)
                 .is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_') =>
@@ -2295,6 +2297,10 @@ mod tests {
             "SELECT ':skip', x::int FROM t -- :nope\nWHERE a = :rank AND b > :min AND c = :rank";
         assert_eq!(params(sql), ["rank", "min"]);
         assert_eq!(params("SELECT $$it's :no$$, :id"), ["id"]);
+        assert_eq!(
+            params("SELECT arr[2:n], arr[i:j] FROM t WHERE a = :id"),
+            ["id"]
+        );
         let v: std::collections::HashMap<String, String> = [
             ("rank".to_string(), "'Private'".to_string()),
             ("min".into(), "3".into()),

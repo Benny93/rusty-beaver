@@ -2,6 +2,7 @@
 //! After `alias.` or `table.` only that table's columns are offered (aliases come from the
 //! FROM / JOIN clauses of the text).
 
+use crate::db::Driver;
 use gpui_kit::component::input::{CompletionProvider, Rope, RopeExt as _};
 use gpui_kit::{App, Task, Window};
 use lsp_types::{
@@ -262,6 +263,33 @@ pub fn suggest(text: &str, offset: usize, catalog: &Catalog) -> (usize, Vec<Sugg
 
 pub struct SqlCompletion {
     pub catalog: SharedCatalog,
+    /// How names are quoted when inserted.
+    pub driver: Driver,
+}
+
+/// A table or column name as `driver` needs it in SQL: parts that are no plain identifier
+/// there get quoted (Postgres "Orders", MySQL `my table`); `force` quotes every part (the user
+/// already typed the opening quote).
+pub fn sql_name(name: &str, driver: Driver, force: bool) -> String {
+    name.split('.')
+        .map(|p| {
+            let start = p
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+            let rest = |c: char| c.is_ascii_alphanumeric() || c == '_';
+            // Postgres folds unquoted names to lower case: Orders would become orders
+            let plain = start
+                && p.chars().all(rest)
+                && (driver != Driver::Postgres || !p.chars().any(|c| c.is_ascii_uppercase()));
+            if plain && !force {
+                p.to_string()
+            } else {
+                driver.quote(p)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
 impl CompletionProvider for SqlCompletion {
@@ -275,8 +303,15 @@ impl CompletionProvider for SqlCompletion {
     ) -> Task<anyhow::Result<CompletionResponse>> {
         let text = rope.to_string();
         let (start, items) = suggest(&text, offset, &self.catalog.lock().unwrap());
-        let range = lsp_types::Range {
-            start: rope.offset_to_position(start),
+        // "be|: the typed quote is replaced along with the word, by a fully quoted name
+        let quote = if self.driver == Driver::Mysql {
+            '`'
+        } else {
+            '"'
+        };
+        let quoted = start > 0 && text[..start].ends_with(quote);
+        let range = |from: usize| lsp_types::Range {
+            start: rope.offset_to_position(from),
             end: rope.offset_to_position(offset),
         };
         let items = items
@@ -290,9 +325,15 @@ impl CompletionProvider for SqlCompletion {
                     Kind::Column => CompletionItemKind::FIELD,
                 }),
                 detail: Some(s.detail),
-                text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                    range,
-                    new_text: s.label,
+                text_edit: Some(CompletionTextEdit::Edit(match s.kind {
+                    Kind::Keyword => TextEdit {
+                        range: range(start),
+                        new_text: s.label,
+                    },
+                    _ => TextEdit {
+                        range: range(if quoted { start - 1 } else { start }),
+                        new_text: sql_name(&s.label, self.driver, quoted),
+                    },
                 })),
                 ..Default::default()
             })
@@ -310,7 +351,23 @@ impl CompletionProvider for SqlCompletion {
 
 #[cfg(test)]
 mod tests {
-    use super::{Catalog, Kind, suggest};
+    use super::{Catalog, Kind, sql_name, suggest};
+    use crate::db::Driver;
+
+    #[test]
+    fn inserted_names_are_quoted_where_needed() {
+        assert_eq!(
+            sql_name("public.dams", Driver::Postgres, false),
+            "public.dams"
+        );
+        assert_eq!(
+            sql_name("public.Orders", Driver::Postgres, false),
+            "public.\"Orders\""
+        );
+        assert_eq!(sql_name("Orders", Driver::Mysql, false), "Orders");
+        assert_eq!(sql_name("my table", Driver::Mysql, false), "`my table`");
+        assert_eq!(sql_name("beavers", Driver::Sqlite, true), "\"beavers\""); // typed "be
+    }
 
     fn catalog() -> Catalog {
         let mut c = Catalog {

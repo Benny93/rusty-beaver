@@ -697,15 +697,16 @@ impl AppView {
             TabKind::Diagram => format!("ER: {conn_name}"),
             TabKind::Table(t) => t.clone(),
         };
-        let catalog = self
+        let (catalog, driver) = self
             .conn_ix(conn)
-            .map(|i| self.conns[i].catalog.clone())
+            .map(|i| (self.conns[i].catalog.clone(), self.conns[i].cfg.driver))
             .unwrap_or_default();
         let editor = cx.new(|cx| {
             let mut e = EditorState::new(window, cx)
                 .language("sql")
                 .default_value(sql);
-            e.lsp_mut().completion_provider = Some(std::rc::Rc::new(SqlCompletion { catalog }));
+            e.lsp_mut().completion_provider =
+                Some(std::rc::Rc::new(SqlCompletion { catalog, driver }));
             e
         });
         if kind == TabKind::Sql {

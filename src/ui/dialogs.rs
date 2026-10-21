@@ -225,6 +225,7 @@ impl AppView {
             }
         }
         self.save();
+        self.save_session_soon(cx); // tabs are saved by connection name
         self.status = format!("Updated connection {}", cfg.name);
         cx.notify();
         Ok(())
@@ -365,6 +366,7 @@ impl AppView {
             self.selected = None;
         }
         self.save();
+        self.save_session_soon(cx);
         cx.notify();
     }
 

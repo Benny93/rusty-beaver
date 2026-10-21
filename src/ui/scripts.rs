@@ -106,10 +106,12 @@ impl AppView {
             return;
         };
         for s in v["scripts"].as_array().into_iter().flatten() {
-            let conn = s["connection"]
-                .as_str()
-                .and_then(|n| self.conn_by_name(n).ok())
-                .or(self.conns.first().map(|c| c.id));
+            // A table or diagram of a deleted connection is gone with it; a script keeps its
+            // text, on the first connection.
+            let conn = match s["connection"].as_str() {
+                Some(n) => self.conn_by_name(n).ok(),
+                None => self.conns.first().map(|c| c.id),
+            };
             // Table and diagram tabs come back empty and load when first selected.
             if let (Some(conn), Some(table)) = (conn, s["table"].as_str()) {
                 let tab = self.open_tab(
@@ -130,7 +132,10 @@ impl AppView {
                 self.tabs[tab].stale = true;
                 continue;
             }
-            if let Some(conn) = conn {
+            if s["table"].is_null()
+                && s["er_diagram"].is_null()
+                && let Some(conn) = conn.or(self.conns.first().map(|c| c.id))
+            {
                 let tab = self.open_tab(
                     conn,
                     TabKind::Sql,
@@ -201,6 +206,7 @@ impl AppView {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         t.path = Some(path.clone());
+        self.save_session_soon(cx); // the path comes back after a restart
         let msg = format!("Saved {}", path.display());
         self.status = msg.clone();
         cx.notify();

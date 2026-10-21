@@ -661,7 +661,21 @@ impl AppView {
             .conn_ix(conn)
             .map(|i| self.conns[i].cfg.name.clone())
             .unwrap_or_default();
-        let n = self.tabs.iter().filter(|t| t.kind == TabKind::Sql).count() + 1;
+        // one more than the highest open Script-N: closing Script-1 must not give two Script-2
+        let n = self
+            .tabs
+            .iter()
+            .filter_map(|t| {
+                t.title
+                    .strip_prefix("Script-")?
+                    .split(' ')
+                    .next()?
+                    .parse()
+                    .ok()
+            })
+            .max()
+            .unwrap_or(0)
+            + 1;
         let title = match &kind {
             // Script name first: long titles are cut off in the tab bar.
             TabKind::Sql => format!("Script-{n} <{conn_name}>"),

@@ -42,12 +42,12 @@ A DBeaver-style database tool written in Rust with [GPUI](https://gpui.rs/) (via
   - **Edit the data in place**: double-click or F2 to edit a cell, set NULL, add, duplicate and delete rows. Changes stay highlighted until you **Save**. Save runs UPDATE/INSERT/DELETE by primary key in one transaction, so it all goes through or nothing does. You can also **Revert**.
   - Right-click a cell to *Filter by / Exclude this value*, or *Open Referenced Row*, which follows a foreign key to the parent table, filtered to that row.
 - **Transactions**: switch a connection between auto-commit and **manual commit**. In manual commit, the first change opens a transaction ("smart commit"), and reads run inside it. Commit and Rollback live in the toolbar, and grid saves and CSV imports join the open transaction.
-- **Production connections** (a toggle in the connection dialog) get a red PROD tag and a warning banner. SQL that changes data or schema, and grid saves, ask for confirmation first. Agents have to pass `confirm: true`.
+- **Production connections** (a toggle in the connection dialog) get a red PROD tag and a warning banner. SQL that changes data or schema, grid saves and CSV imports ask for confirmation first. Agents have to pass `confirm: true`.
 - **Read-only connections** (an RO tag) refuse SQL that changes data or schema, grid saves and imports outright.
-- **Reconnects by itself** when a server restarts or the network drops. The statement is retried once, except inside an open manual-commit transaction, which the server has already rolled back.
+- **Reconnects by itself** when a server restarts or the network drops. A read is retried once. A statement that changes data is not, because the server may already have run it, and neither is anything inside an open manual-commit transaction, which the server has already rolled back: both report the lost connection.
 - **ER diagram** for each connection: tables with keys, foreign-key links between them, and boxes you can drag.
 - **Query history** (last 500 statements) with duration and outcome. Click an entry to reopen it.
-- **CSV import** into a table. The header row names the columns, and the import is one transaction.
+- **CSV import** into a table. The header row names the columns, and the import is one transaction. Comma, semicolon (Excel in German and other locales) or tab separated, UTF-8 or Latin-1.
 - **Connections**: New and Edit Connection dialog with *Test Connection*, and three explicit ways to sign in: a password kept in the OS keychain, a HashiCorp Vault secret, or Vault dynamic credentials (with OpenID Connect sign-in). See [Connecting and signing in](#connecting-and-signing-in).
 - **Dark and light themes**, or follow the system appearance (the choice is remembered), native menus, a keyboard shortcut overview (F1).
 - **Splash screen** and a **Metal Slug style pixel-art icon** (a beaver soldier hugging a database), on macOS, Windows and Linux.
@@ -173,9 +173,9 @@ There are 55 tools. Each one changes the UI the user is looking at and returns s
 | See | `get_state`, `screenshot` (warns when the screen is locked and the frame may be stale) |
 | Connections | `test_connection`, `add_connection`, `edit_connection`, `delete_connection`, `connect`, `disconnect`, `refresh_connection`, `list_tables`, `connection_dialog` |
 | Schema | `describe_table`, `open_er_diagram`, `generate_sql`, `row_counts` |
-| SQL | `new_sql_editor`, `set_sql`, `run_sql` (`connection`, `params` for `:name`, `confirm` for production), `execute_editor` (like Mod+Enter), `cancel_query`, `explain`, `format_sql`, `sql_completions`, `open_script`, `save_script` |
+| SQL | `new_sql_editor`, `set_sql`, `run_sql` (`connection`, `params` for `:name`, `confirm` for production), `execute_editor` (like Mod+Enter), `cancel_query` (`index`), `explain`, `format_sql`, `sql_completions`, `open_script`, `save_script` |
 | Results | `get_results` (`index` for a script's result), `sort_results`, `search_results`, `results_as_text`, `chart`, `record_view`, `show_value`, `export_csv` (csv/tsv/json/md/txt/sql by extension) |
-| Table data | `open_table`, `set_table_view` (data/columns/ddl), `set_filter`, `load_more`, `edit_cell`, `add_row`, `duplicate_row`, `delete_row`, `open_referenced_row`, `save_changes` (`confirm` for production), `revert_changes`, `import_csv` |
+| Table data | `open_table`, `set_table_view` (data/columns/ddl), `set_filter`, `load_more`, `edit_cell`, `add_row`, `duplicate_row`, `delete_row`, `open_referenced_row`, `save_changes` (`confirm` for production), `revert_changes`, `import_csv` (`confirm` for production) |
 | Transactions | `set_auto_commit`, `commit`, `rollback` |
 | UI | `select_tab`, `close_tab`, `close_all_tabs`, `set_sidebar` (navigator/history), `get_history`, `set_theme` (dark/light/system), `shortcuts` (the F1 overview) |
 

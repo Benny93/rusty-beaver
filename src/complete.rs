@@ -198,13 +198,18 @@ pub fn suggest(text: &str, offset: usize, catalog: &Catalog) -> (usize, Vec<Sugg
         .strip_suffix(['"', '`'])
         .unwrap_or(&before[..start]);
     let qualifier = head.strip_suffix('.').map(|q| {
-        let qs = q
-            .char_indices()
-            .rev()
-            .take_while(|(_, c)| is_word(*c) || *c == '"' || *c == '`')
-            .last()
-            .map(|(i, _)| i)
-            .unwrap_or(q.len());
+        // "my table".: back to the opening quote (spaces and all)
+        let quoted = q
+            .strip_suffix(['"', '`'])
+            .and_then(|inner| inner.rfind(&q[q.len() - 1..]));
+        let qs = quoted.unwrap_or_else(|| {
+            q.char_indices()
+                .rev()
+                .take_while(|(_, c)| is_word(*c) || *c == '"' || *c == '`')
+                .last()
+                .map(|(i, _)| i)
+                .unwrap_or(q.len())
+        });
         q[qs..]
             .trim_matches(|c| c == '"' || c == '`')
             .to_lowercase()
@@ -544,6 +549,12 @@ mod tests {
         let mut c = c;
         c.set_columns("my table", vec![("x".into(), "INT".into())]);
         let (_, s) = suggest("SELECT t. FROM \"my table\" t", 9, &c);
+        assert_eq!(
+            s.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(),
+            ["x"]
+        );
+        let text = "SELECT \"my table\". FROM \"my table\"";
+        let (_, s) = suggest(text, 18, &c);
         assert_eq!(
             s.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(),
             ["x"]

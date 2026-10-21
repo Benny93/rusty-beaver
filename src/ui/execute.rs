@@ -223,6 +223,8 @@ impl AppView {
             (matches!(
                 w1.as_str(),
                 "CREATE" | "ALTER" | "DROP" | "TRUNCATE" | "RENAME" | "GRANT" | "REVOKE"
+                    // table maintenance commits implicitly too
+                    | "ANALYZE" | "OPTIMIZE" | "REPAIR" | "FLUSH" | "CHECK" | "CACHE"
             ) || w1 == "LOCK" && w2 == "TABLES")
                 && w2 != "TEMPORARY"
         };

@@ -359,7 +359,8 @@ impl AppView {
         }
         let mut cfg = cfg;
         crate::vault::upgrade_legacy(&mut cfg);
-        if cfg.id.is_empty() {
+        // a taken id would share (and on delete, erase) the other connection's password
+        if cfg.id.is_empty() || self.conns.iter().any(|c| c.cfg.id == cfg.id) {
             cfg.id = crate::secrets::new_id();
         }
         cfg.keychain = false;

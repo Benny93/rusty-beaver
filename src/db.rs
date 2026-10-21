@@ -1258,6 +1258,7 @@ pub fn load_connections() -> (Vec<ConnConfig>, bool, Option<String>) {
         }
     };
     let mut resave = false;
+    let mut seen = std::collections::HashSet::new();
     for c in &mut list {
         if c.id.is_empty() {
             c.id = secrets::new_id();
@@ -1276,6 +1277,13 @@ pub fn load_connections() -> (Vec<ConnConfig>, bool, Option<String>) {
             resave = true; // `vault:` in the password field, from before the explicit modes
         } else if secrets::enabled() && c.auth == Auth::Password && !c.password.is_empty() {
             resave = true; // a plain-text password from before: move it into the keychain
+        }
+        // A copied entry (same id) would share one keychain password, and deleting either
+        // erased it: it gets an id of its own (its password, read above, is saved under it).
+        if !seen.insert(c.id.clone()) {
+            c.id = secrets::new_id();
+            c.keychain = false;
+            resave = true;
         }
     }
     (list, resave, None)
@@ -2476,6 +2484,14 @@ mod tests {
             let mode = std::fs::metadata(&file).unwrap().permissions().mode();
             assert_eq!(mode & 0o077, 0, "{mode:o}");
         }
+        // A copied entry (same id) gets an id of its own: they would share one password.
+        std::fs::write(
+            &file,
+            r#"[{"name":"a","driver":"sqlite","id":"x"},{"name":"b","driver":"sqlite","id":"x"}]"#,
+        )
+        .unwrap();
+        let (two, resave, _) = load_connections();
+        assert!(resave && two[0].id != two[1].id);
         // A file that does not parse is moved aside, not overwritten by the next save.
         std::fs::write(&file, r#"[{"name":"typo",}]"#).unwrap();
         let (_, _, note) = load_connections();

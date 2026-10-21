@@ -174,7 +174,7 @@ There are 55 tools. Each one changes the UI the user is looking at and returns s
 | Connections | `test_connection`, `add_connection`, `edit_connection`, `delete_connection`, `connect`, `disconnect`, `refresh_connection`, `list_tables`, `connection_dialog` |
 | Schema | `describe_table`, `open_er_diagram`, `generate_sql`, `row_counts` |
 | SQL | `new_sql_editor`, `set_sql`, `run_sql` (`connection`, `params` for `:name`, `confirm` for production), `execute_editor` (like Mod+Enter), `cancel_query` (`index`), `explain`, `format_sql`, `sql_completions`, `open_script`, `save_script` |
-| Results | `get_results` (`index` for a script's result), `sort_results`, `search_results`, `results_as_text`, `chart`, `record_view`, `show_value`, `export_csv` (csv/tsv/json/md/txt/sql by extension) |
+| Results | `get_results` (`index` for a script's result), `sort_results`, `search_results`, `results_as_text`, `chart`, `record_view`, `show_value`, `export_csv` (absolute path; csv/tsv/json/md/txt/sql by extension) |
 | Table data | `open_table`, `set_table_view` (data/columns/ddl), `set_filter`, `load_more`, `edit_cell`, `add_row`, `duplicate_row`, `delete_row`, `open_referenced_row`, `save_changes` (`confirm` for production), `revert_changes`, `import_csv` (`confirm` for production) |
 | Transactions | `set_auto_commit`, `commit`, `rollback` |
 | UI | `select_tab`, `close_tab`, `close_all_tabs`, `set_sidebar` (navigator/history), `get_history`, `set_theme` (dark/light/system), `shortcuts` (the F1 overview) |

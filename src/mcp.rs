@@ -93,7 +93,7 @@ pub struct LimitArg {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct PathArg {
-    /// Absolute output path; .csv, .tsv, .json, .md or .sql.
+    /// Absolute output path; .csv, .tsv, .json, .md, .txt or .sql (no extension: CSV).
     pub path: String,
 }
 

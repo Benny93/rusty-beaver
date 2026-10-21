@@ -341,6 +341,10 @@ def main():
             assert len(er["relations"]) == 2, er["relations"]
             assert call("generate_sql", {"connection": DB, "table": "lodges", "kind": "select"})["sql"].startswith("SELECT")
             assert len(call("get_history", {"limit": 3})) == 3
+            # a failed statement keeps how long it ran
+            call("run_sql", {"connection": DB, "sql": "SELECT nope FROM beavers"}, ok=False)
+            last = call("get_history", {"limit": 1})[0]
+            assert not last["ok"] and last["ms"] > 0, last
             png = call("screenshot")
             assert png is not None
 

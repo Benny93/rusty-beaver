@@ -352,7 +352,11 @@ impl AppView {
                         sql: logged,
                         connection: conn_name,
                         at: history::now(),
-                        ms: 0.,
+                        // from the tab's start: a failed or cancelled run took time too
+                        ms: v
+                            .tab_ix(key)
+                            .and_then(|i| v.tabs[i].started)
+                            .map_or(0., |s| s.elapsed().as_secs_f64() * 1000.),
                         outcome: e.lines().next().unwrap_or_default().to_string(),
                         ok: false,
                     },

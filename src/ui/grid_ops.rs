@@ -358,8 +358,9 @@ impl AppView {
                     self.conns[i].in_tx = true;
                     self.conns[i].tx_statements += n;
                 }
-                self.with_session::<QueryResult>(
+                self.with_session_write::<QueryResult>(
                     conn,
+                    true,
                     move |s| {
                         if manual {
                             if !in_tx {

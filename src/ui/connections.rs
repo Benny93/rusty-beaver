@@ -65,6 +65,8 @@ impl AppView {
             return;
         }
         c.status = ConnStatus::Connecting;
+        c.generation += 1;
+        let generation = c.generation;
         self.status = if c.cfg.auth.is_vault() {
             format!(
                 "Connecting to {}: fetching credentials from Vault (sign in in your browser if it opens)…",
@@ -92,6 +94,18 @@ impl AppView {
                     return done(v, Err("connection is gone".into()), window, cx);
                 };
                 let c = &mut v.conns[ix];
+                if c.generation != generation {
+                    // Disconnected (or edited) meanwhile: this session has the old settings.
+                    if c.status == ConnStatus::Connecting {
+                        return c.waiting.push(done); // a newer connect answers it
+                    }
+                    let waiting = std::mem::take(&mut c.waiting);
+                    let e = "disconnected while connecting".to_string();
+                    for w in waiting {
+                        w(v, Err(e.clone()), window, cx);
+                    }
+                    return done(v, Err(e), window, cx);
+                }
                 let waiting = std::mem::take(&mut c.waiting);
                 let out = match res {
                     Ok((s, tables, canceller, version)) => {
@@ -198,8 +212,9 @@ impl AppView {
             self.conns[i].in_tx = true;
             self.conns[i].tx_statements += n;
         }
-        self.with_session::<QueryResult>(
+        self.with_session_write::<QueryResult>(
             id,
+            true,
             move |s| {
                 if manual {
                     if !in_tx {
@@ -407,6 +422,7 @@ impl AppView {
         if let Some(ix) = self.conn_ix(id) {
             let c = &mut self.conns[ix];
             (c.session, c.status, c.expanded) = (None, ConnStatus::Disconnected, false);
+            c.generation += 1; // a connect still running is stale now
             c.canceller = None;
             (c.in_tx, c.tx_statements) = (false, 0);
             c.tables.clear();
@@ -426,6 +442,20 @@ impl AppView {
         done: Callback<T>,
     ) {
         self.with_session_retry(id, Arc::new(work), true, window, cx, done)
+    }
+
+    /// `with_session` for work that may change data (`write`): after a lost connection it
+    /// does not run again, since the server may have done it already (a duplicated INSERT).
+    pub(super) fn with_session_write<T: Send + 'static>(
+        &mut self,
+        id: u64,
+        write: bool,
+        work: impl Fn(&mut Session) -> Result<T, String> + Send + Sync + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        done: Callback<T>,
+    ) {
+        self.with_session_retry(id, Arc::new(work), !write, window, cx, done)
     }
 
     /// Run `work`; when the connection turns out to be gone (server restart, network), drop
@@ -450,11 +480,18 @@ impl AppView {
                 cx,
                 Box::new(move |v, r, window, cx| match r {
                     Ok(_) => v.with_session_retry(id, work, retry, window, cx, done),
-                    Err(e) => done(v, Err(e), window, cx),
+                    Err(e) => {
+                        // not connected: no transaction can be open
+                        if let Some(ix) = v.conn_ix(id) {
+                            (v.conns[ix].in_tx, v.conns[ix].tx_statements) = (false, 0);
+                        }
+                        done(v, Err(e), window, cx)
+                    }
                 }),
             );
         };
         let w = work.clone();
+        let used = session.clone();
         cx.spawn_in(window, async move |this, cx| {
             let (res, broken) = cx
                 .background_spawn(async move {
@@ -472,6 +509,16 @@ impl AppView {
                     return done(v, res, window, cx);
                 };
                 let c = &mut v.conns[ix];
+                if !c.session.as_ref().is_some_and(|s| Arc::ptr_eq(s, &used)) {
+                    // Another job already noticed and dropped (or replaced) this session:
+                    // leave the connection to it, and retry on what is there now.
+                    return if retry {
+                        v.with_session_retry(id, work, false, window, cx, done)
+                    } else {
+                        let e = res.err().unwrap_or_default();
+                        done(v, Err(format!("{e}\n(connection lost)")), window, cx)
+                    };
+                }
                 let lost_tx = std::mem::take(&mut c.in_tx);
                 c.tx_statements = 0;
                 (c.session, c.canceller, c.status) = (None, None, ConnStatus::Disconnected);

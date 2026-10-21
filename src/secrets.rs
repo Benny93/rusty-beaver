@@ -81,11 +81,14 @@ pub fn load(id: &str) -> Result<Option<String>, String> {
 
 pub fn delete(id: &str) {
     let _ = with_map(|m| {
-        if m.remove(id).is_some() {
-            write(m)
-        } else {
-            Ok(())
+        let Some(p) = m.remove(id) else {
+            return Ok(());
+        };
+        let r = write(m);
+        if r.is_err() {
+            m.insert(id.into(), p); // still in the keychain: the cache says so
         }
+        r
     });
     raw::delete(id);
 }

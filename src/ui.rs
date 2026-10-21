@@ -313,6 +313,8 @@ struct Conn {
     catalog: SharedCatalog,
     /// Callers waiting for the connect in progress.
     waiting: Vec<Done>,
+    /// Bumped by every connect and disconnect: a connect that finishes late sees it changed.
+    generation: u64,
 }
 
 /// What `run` executes.
@@ -528,6 +530,7 @@ impl AppView {
                 in_tx: false,
                 tx_statements: 0,
                 waiting: vec![],
+                generation: 0,
             })
             .collect();
         let next_id = conns.len() as u64 + 1;

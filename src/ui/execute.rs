@@ -225,8 +225,9 @@ impl AppView {
                 (c.in_tx, c.tx_statements) = (true, c.tx_statements + 1);
             }
         }
-        self.with_session::<Vec<QueryResult>>(
+        self.with_session_write::<Vec<QueryResult>>(
             conn,
+            write,
             move |s| {
                 if need_begin {
                     s.begin()?;

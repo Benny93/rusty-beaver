@@ -22,8 +22,12 @@ pub struct Catalog {
 
 impl Catalog {
     pub fn set_columns(&mut self, table: &str, cols: Vec<(String, String)>) {
-        if let Some((_, bare)) = table.split_once('.') {
-            self.columns.insert(bare.to_lowercase(), cols.clone());
+        // the bare name is public's table (the default search_path) when there is one
+        if let Some((schema, bare)) = table.split_once('.') {
+            let bare = bare.to_lowercase();
+            if schema == "public" || !self.columns.contains_key(&format!("public.{bare}")) {
+                self.columns.insert(bare, cols.clone());
+            }
         }
         self.columns.insert(table.to_lowercase(), cols);
     }
@@ -531,6 +535,18 @@ mod tests {
         );
         c.set_columns("public.dams", vec![("height".into(), "numeric".into())]);
         c
+    }
+
+    #[test]
+    fn bare_name_is_the_public_schemas_table() {
+        // dams in a query is public.dams (search_path), whichever schema loaded last
+        for order in [["public.dams", "sales.dams"], ["sales.dams", "public.dams"]] {
+            let mut c = Catalog::default();
+            for t in order {
+                c.set_columns(t, vec![(t.replace('.', "_"), "int".into())]);
+            }
+            assert_eq!(c.columns["dams"][0].0, "public_dams");
+        }
     }
 
     #[test]

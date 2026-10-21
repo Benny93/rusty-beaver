@@ -216,7 +216,6 @@ impl AppView {
         let mysql = self.mysql_tab(tab);
         // first two words of each statement, past comments
         let heads = db::statement_heads(&sql, mysql);
-        let (w1, _) = heads.first().cloned().unwrap_or_default();
         // MySQL commits the open transaction when it runs DDL (temporary tables aside), also
         // when the DDL then fails; only one that does not parse leaves it open. Settled once
         // the statements ran.
@@ -230,10 +229,14 @@ impl AppView {
         let mysql_ddl = mysql && heads.first().is_some_and(ddl);
         let script_ddl = mysql && heads.iter().skip(1).any(ddl);
         let one_statement = heads.len() <= 1;
-        let ends_tx = matches!(w1.as_str(), "COMMIT" | "ROLLBACK" | "END");
+        let ends = |(w, _): &(String, String)| matches!(w.as_str(), "COMMIT" | "ROLLBACK" | "END");
+        // "UPDATE …; COMMIT" ends the transaction too, not only a script starting with COMMIT
+        // ponytail: statements after the COMMIT run outside a transaction, as typed
+        let ends_tx = heads.iter().any(ends);
         // Smart commit: only a change opens the transaction; reads run inside an open one.
         let write = db::is_write(&sql);
-        let need_begin = manual && !in_tx && write && !ends_tx && !mysql_ddl;
+        let need_begin =
+            manual && !in_tx && write && !heads.first().is_some_and(ends) && !mysql_ddl;
         if manual && let Some(i) = self.conn_ix(conn) {
             let c = &mut self.conns[i];
             if ends_tx {

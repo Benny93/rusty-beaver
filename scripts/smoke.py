@@ -128,6 +128,10 @@ def main():
             call("run_sql", {"connection": DB, "sql": "DELETE FROM missions"})
             call("rollback", {"connection": DB})
             assert q("SELECT count(*) FROM missions") == [(6,)]
+            # a COMMIT at the end of a script ends the transaction it opened
+            call("run_sql", {"connection": DB, "sql": "INSERT INTO lodges(name, river) VALUES ('Tx Lodge', 'Main'); COMMIT"})
+            assert not [c for c in call("get_state")["connections"] if c["name"] == DB][0]["in_transaction"]
+            assert q("SELECT count(*) FROM lodges WHERE name = 'Tx Lodge'") == [(1,)]
             call("set_auto_commit", {"connection": DB, "on": True})
             call("edit_connection", {"connection": DB, "production": True})
             assert "confirm" in call("run_sql", {"connection": DB, "sql": "DELETE FROM missions WHERE id = 6"}, ok=False)

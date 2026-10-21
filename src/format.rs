@@ -317,7 +317,13 @@ pub fn format_sql_as(sql: &str, mysql: bool) -> String {
             Tok::Raw(r) => {
                 out.push_str(r);
                 if r.starts_with("--") || r.starts_with('#') {
-                    out.push('\n'); // a line comment ends its line
+                    // a line comment ends its line; the next one keeps the comment's indent
+                    let indent = out
+                        .rsplit('\n')
+                        .next()
+                        .map_or(0, |l| l.len() - l.trim_start().len());
+                    out.push('\n');
+                    out.push_str(&" ".repeat(indent));
                 } else {
                     out.push(' ');
                 }
@@ -418,6 +424,11 @@ mod tests {
         assert!(out.contains("$$a, b$$"), "{out}");
         assert!(out.contains("1.5e-3"), "{out}");
         let out = format_sql("select * from t where a=:id and b=$1 and c = E'it\\'s' -- x\n");
+        // the line after a comment keeps the indent
+        assert_eq!(
+            format_sql("select a, -- note\n b from t"),
+            "SELECT\n    a,\n    -- note\n    b\nFROM t\n"
+        );
         let half = format_sql("select .5, a*.25 from t");
         assert!(half.contains(".5,") && half.contains(".25"), "{half}"); // numbers stay whole
         assert!(!half.contains(". 5") && !half.contains(". 25"), "{half}");

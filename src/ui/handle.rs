@@ -923,13 +923,14 @@ impl AppView {
             })).collect::<Vec<_>>(),
             "selected": self.selected.as_ref().map(|(id, t)| json!({ "connection": name(*id), "table": t })),
             "tabs": self.tabs.iter().enumerate().map(|(i, t)| {
-                let r = &t.grid.read(cx).delegate().r;
+                let g = t.grid.read(cx).delegate();
+                let r = &g.r;
                 json!({
                     "index": i, "title": t.title, "active": i == self.active, "connection": name(t.conn),
                     "kind": match &t.kind { TabKind::Sql => "sql".to_string(), TabKind::Table(n) => format!("table:{n}"), TabKind::Diagram => "er_diagram".to_string() },
                     "view": format!("{:?}", t.view).to_lowercase(),
                     "sql": t.editor.read(cx).value().to_string(), "running": t.running,
-                    "result": { "columns": r.columns, "rows": r.rows.len() },
+                    "result": { "columns": r.columns, "rows": g.order.len() }, // as shown: a search hides some
                     "filter": t.filter.read(cx).value().to_string(),
                     "total_rows": t.total,
                     "file": t.path.as_ref().map(|p| p.display().to_string()),

@@ -334,6 +334,8 @@ def main():
             call("search_results", {"text": "1"})
             r = call("record_view", {"on": True})
             assert (r["row"], r["record"]) == (0, {"a": "1"}), r
+            active = [t for t in call("get_state")["tabs"] if t["active"]][0]
+            assert active["result"]["rows"] == 1, active["result"]  # what the grid shows
             call("record_view", {"on": False})
             er = call("open_er_diagram", {"connection": DB})
             assert len(er["relations"]) == 2, er["relations"]

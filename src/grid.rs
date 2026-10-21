@@ -220,7 +220,9 @@ pub fn column_stats(g: &Grid, col: usize) -> Vec<(&'static str, String)> {
             fmt(nums.iter().copied().fold(f64::NEG_INFINITY, f64::max)),
         ));
         out.push(("sum", fmt(sum)));
-        out.push(("avg", fmt(sum / nums.len() as f64)));
+        // divided first: the sum of large values can overflow while their average does not
+        let n = nums.len() as f64;
+        out.push(("avg", fmt(nums.iter().map(|x| x / n).sum())));
     } else if !present.is_empty() {
         let short = |s: &&String| {
             if s.chars().count() > 40 {

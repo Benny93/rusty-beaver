@@ -92,10 +92,16 @@ impl Grid {
 
     /// Rows as shown (sorted, edits applied, deleted rows left out): for copy / export.
     pub fn shown(&self) -> QueryResult {
+        self.rows(false)
+    }
+
+    /// The rows in grid order, edits applied; `with_deleted` keeps rows marked for deletion
+    /// (still drawn, so their positions match the grid's row numbers).
+    pub fn rows(&self, with_deleted: bool) -> QueryResult {
         let rows = self
             .order
             .iter()
-            .filter(|id| !self.changes.deleted.contains(id))
+            .filter(|id| with_deleted || !self.changes.deleted.contains(id))
             .map(|&id| {
                 (0..self.r.columns.len())
                     .map(|c| self.value(id, c))
@@ -105,7 +111,9 @@ impl Grid {
         QueryResult {
             columns: self.r.columns.clone(),
             rows,
-            ..self.r.clone()
+            affected: self.r.affected, // not ..self.r.clone(): that copied every row
+            elapsed: self.r.elapsed,
+            truncated: self.r.truncated,
         }
     }
 

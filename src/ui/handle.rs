@@ -172,7 +172,7 @@ impl AppView {
                 let r = self
                     .tabs
                     .get(self.active)
-                    .map(|t| result_json(&t.grid.read(cx).delegate().shown(), max_rows))
+                    .map(|t| result_json(&t.grid.read(cx).delegate().rows(true), max_rows)) // positions as drawn, deleted rows too
                     .ok_or("no tab open".to_string());
                 now(self, r, window, cx, done)
             }
@@ -344,7 +344,7 @@ impl AppView {
                                     g.delegate_mut().perform_sort(col, sort, window, cx);
                                     cx.notify();
                                 });
-                                Ok(result_json(&grid.read(cx).delegate().shown(), max_rows))
+                                Ok(result_json(&grid.read(cx).delegate().rows(true), max_rows)) // positions as drawn, deleted rows too
                             }
                         }
                     }
@@ -521,7 +521,10 @@ impl AppView {
                             g.delegate_mut().set_search(&text);
                             cx.notify();
                         });
-                        Ok(result_json(&t.grid.read(cx).delegate().shown(), max_rows))
+                        Ok(result_json(
+                            &t.grid.read(cx).delegate().rows(true),
+                            max_rows,
+                        )) // positions as drawn, deleted rows too
                     }
                     None => Err("no tab open".to_string()),
                 };

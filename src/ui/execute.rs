@@ -421,6 +421,19 @@ impl AppView {
         if !t.running {
             return Err("nothing is running".into());
         }
+        // The canceller stops whatever runs on the connection: a tab that started earlier
+        // there holds it, and this one is still waiting.
+        // ponytail: start order stands in for lock order
+        if let Some(first) = self
+            .tabs
+            .iter()
+            .find(|o| o.running && o.conn == t.conn && o.started < t.started && o.grid != t.grid)
+        {
+            return Err(format!(
+                "this query waits for the one in {:?} on the same connection: cancel that one",
+                first.title
+            ));
+        }
         let c = self
             .conn_ix(t.conn)
             .and_then(|i| self.conns[i].canceller.clone())

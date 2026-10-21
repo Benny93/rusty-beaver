@@ -85,7 +85,7 @@ impl AppView {
                     .map(|&id| g.value(id, col))
                     .filter(|v| v != "NULL" && seen.insert(v.clone()))
                     .map(|v| {
-                        if v.parse::<f64>().is_ok() {
+                        if crate::grid::num(&v).is_some() {
                             v
                         } else {
                             driver.literal(&v)

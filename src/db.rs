@@ -1463,13 +1463,24 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
     let nul = |v: &str| v == "NULL";
     match ext.to_ascii_lowercase().as_str() {
         "json" => {
+            // a repeated name (a.id, b.id) gets a suffix instead of overwriting: id, id_2
+            let mut seen = std::collections::HashMap::new();
+            let keys: Vec<String> = r
+                .columns
+                .iter()
+                .map(
+                    |c| match seen.entry(c.clone()).and_modify(|n| *n += 1).or_insert(1) {
+                        1 => c.clone(),
+                        n => format!("{c}_{n}"),
+                    },
+                )
+                .collect();
             let rows: Vec<serde_json::Value> = r
                 .rows
                 .iter()
                 .map(|row| {
                     serde_json::Value::Object(
-                        r.columns
-                            .iter()
+                        keys.iter()
                             .zip(row)
                             .map(|(c, v)| {
                                 (
@@ -1879,6 +1890,14 @@ mod tests {
         let j: serde_json::Value =
             serde_json::from_str(&export(&r, "json", Driver::Sqlite, "t")).unwrap();
         assert_eq!(j[0]["b"], serde_json::Value::Null);
+        let dup = QueryResult {
+            columns: vec!["id".into(), "id".into()],
+            rows: vec![vec!["1".into(), "2".into()]],
+            ..Default::default()
+        };
+        let j: serde_json::Value =
+            serde_json::from_str(&export(&dup, "json", Driver::Sqlite, "t")).unwrap();
+        assert_eq!((&j[0]["id"], &j[0]["id_2"]), (&"1".into(), &"2".into()));
         assert_eq!(
             export(&r, "tsv", Driver::Sqlite, "t"),
             "a\tb\n1\tNULL\nx|y\tit's\n"

@@ -122,7 +122,7 @@ pub fn chart_columns(r: &QueryResult) -> (Option<usize>, Vec<usize>) {
                 .map(|row| row[c].as_str())
                 .filter(|v| *v != "NULL")
                 .peekable();
-            vals.peek().is_some() && vals.all(|v| v.parse::<f64>().is_ok())
+            vals.peek().is_some() && vals.all(|v| num(v).is_some())
         })
         .collect();
     let label = (0..r.columns.len()).find(|c| !numeric.contains(c));
@@ -151,7 +151,7 @@ pub fn chart_data(g: &Grid, label: Option<usize>, value: usize, max: usize) -> V
             if *n > 1 {
                 l = format!("{l} #{n}");
             }
-            (l, g.value(id, value).parse().unwrap_or(0.))
+            (l, num(&g.value(id, value)).unwrap_or(0.))
         })
         .collect()
 }
@@ -174,7 +174,7 @@ pub fn column_stats(g: &Grid, col: usize) -> Vec<(&'static str, String)> {
         ("NULL", (vals.len() - present.len()).to_string()),
         ("distinct", distinct.to_string()),
     ];
-    let nums: Vec<f64> = present.iter().filter_map(|v| v.parse().ok()).collect();
+    let nums: Vec<f64> = present.iter().filter_map(|v| num(v)).collect();
     let fmt = |x: f64| {
         if x.fract() == 0. && x.abs() < 1e15 {
             format!("{}", x as i64)
@@ -208,17 +208,26 @@ pub fn column_stats(g: &Grid, col: usize) -> Vec<(&'static str, String)> {
     out
 }
 
-/// NULL first, numbers by value, everything else by text.
+/// A value as a number; text like "NaN" or "inf" is no number here.
+pub fn num(v: &str) -> Option<f64> {
+    v.parse::<f64>().ok().filter(|x| x.is_finite())
+}
+
+/// NULL first, then numbers by value, then everything else by text: a total order, so
+/// mixed columns sort consistently.
 fn compare(a: &str, b: &str) -> Ordering {
-    match (a == "NULL", b == "NULL") {
-        (true, true) => Ordering::Equal,
-        (true, false) => Ordering::Less,
-        (false, true) => Ordering::Greater,
-        _ => match (a.parse::<f64>(), b.parse::<f64>()) {
-            (Ok(x), Ok(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
-            _ => a.to_lowercase().cmp(&b.to_lowercase()),
-        },
-    }
+    let rank = |v: &str| match (v == "NULL", num(v)) {
+        (true, _) => 0,
+        (_, Some(_)) => 1,
+        _ => 2,
+    };
+    rank(a).cmp(&rank(b)).then_with(|| match (num(a), num(b)) {
+        (Some(x), Some(y)) => x.total_cmp(&y),
+        _ => a
+            .to_lowercase()
+            .cmp(&b.to_lowercase())
+            .then_with(|| a.cmp(b)),
+    })
 }
 
 impl TableDelegate for Grid {
@@ -389,6 +398,9 @@ mod tests {
         let keys: Vec<String> = (0..3).map(|id| g.value(id, 0)).collect();
         g.order.sort_by(|&a, &b| compare(&keys[a], &keys[b]));
         assert_eq!(g.order, [1, 2, 0]); // NULL, 9, 10: numeric, not text order
+        let mut mixed = ["1a", "Nan", "10", "2", "NULL"];
+        mixed.sort_by(|a, b| compare(a, b));
+        assert_eq!(mixed, ["NULL", "2", "10", "1a", "Nan"]); // numbers, then text
         g.changes.cells.insert((0, 0), Some("1".into()));
         assert_eq!(g.value(g.row_id(2).unwrap(), 0), "1");
         let d = g.add_row();

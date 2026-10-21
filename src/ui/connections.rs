@@ -314,11 +314,15 @@ impl AppView {
                         c.tx_statements = c.tx_statements.saturating_sub(n);
                     }
                 }
+                let sqlite = v
+                    .conn_ix(id)
+                    .is_some_and(|i| v.conns[i].cfg.driver == Driver::Sqlite);
                 // Refresh an open data tab of that table (unless it has unsaved edits).
                 if let Some(i) = v.tabs.iter().position(|t| {
                     t.conn == id
-                        // Lodges is the tab of lodges (names match regardless of case)
-                        && matches!(&t.kind, TabKind::Table(n) if n.eq_ignore_ascii_case(&table))
+                        // SQLite: Lodges is the tab of lodges (Postgres' "Users" is not users)
+                        && matches!(&t.kind, TabKind::Table(n) if *n == table
+                            || sqlite && n.eq_ignore_ascii_case(&table))
                         && t.grid.read(cx).delegate().changes.is_empty()
                 }) {
                     v.reload_table(i, w, cx, Box::new(|_, _, _, _| {}));

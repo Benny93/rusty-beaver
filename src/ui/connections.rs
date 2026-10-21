@@ -173,11 +173,14 @@ impl AppView {
     }
 
     /// Insert the rows of a CSV file (header = column names) into a table, in one transaction.
+    /// Production: `confirm` None (the UI) asks, an agent's Some must be true.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn import_csv(
         &mut self,
         id: u64,
         table: String,
         path: std::path::PathBuf,
+        confirm: Option<bool>,
         window: &mut Window,
         cx: &mut Context<Self>,
         done: Done,
@@ -203,6 +206,37 @@ impl AppView {
             return done(self, Err(format!("{name} is read-only")), window, cx);
         }
         let n = inserts.len();
+        if confirm != Some(true)
+            && let Some(name) = self
+                .conn_ix(id)
+                .filter(|&i| self.conns[i].cfg.production)
+                .map(|i| self.conns[i].cfg.name.clone())
+        {
+            if confirm.is_some() {
+                let e =
+                    format!("{name} is a production connection: import again with confirm: true");
+                return done(self, Err(e), window, cx);
+            }
+            let answer = window.prompt(
+                PromptLevel::Warning,
+                &format!("Import {} into production ({name})?", plural(n, "row")),
+                Some(&format!("{table} ← {}", path.display())),
+                &["Import", "Cancel"],
+                cx,
+            );
+            cx.spawn_in(window, async move |this, cx| {
+                let yes = answer.await == Ok(0);
+                let _ = this.update_in(cx, |v, w, cx| {
+                    if yes {
+                        v.import_csv(id, table, path, Some(true), w, cx, done)
+                    } else {
+                        done(v, Err("cancelled".into()), w, cx)
+                    }
+                });
+            })
+            .detach();
+            return;
+        }
         self.status = format!("Importing {} into {table}…", plural(n, "row"));
         let (manual, in_tx) = self
             .conn_ix(id)

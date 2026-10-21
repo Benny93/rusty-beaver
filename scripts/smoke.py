@@ -125,6 +125,10 @@ def main():
             assert "confirm" in call("run_sql", {"connection": DB, "sql": "DELETE FROM missions WHERE id = 6"}, ok=False)
             call("run_sql", {"connection": DB, "sql": "DELETE FROM missions WHERE id = 6", "confirm": True})
             assert q("SELECT count(*) FROM missions") == [(5,)]
+            csv = os.path.join(tmp, "prod.csv")
+            open(csv, "w").write("name,river\nProd Lodge,Oder\n")
+            assert "confirm" in call("import_csv", {"connection": DB, "table": "lodges", "path": csv}, ok=False)
+            assert q("SELECT count(*) FROM lodges WHERE name = 'Prod Lodge'") == [(0,)]
             call("edit_connection", {"connection": DB, "production": False, "read_only": True})
             assert "read-only" in call("run_sql", {"connection": DB, "sql": "DELETE FROM missions", "confirm": True}, ok=False)
             assert q("SELECT count(*) FROM missions") == [(5,)]

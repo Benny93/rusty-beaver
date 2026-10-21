@@ -347,7 +347,12 @@ impl AppView {
                 let i = a["index"]
                     .as_u64()
                     .map(|i| i as usize)
-                    .or_else(|| self.tabs.iter().position(|t| t.running))
+                    // the longest running holds the connection; later ones wait for it
+                    .or_else(|| {
+                        (0..self.tabs.len())
+                            .filter(|&i| self.tabs[i].running)
+                            .min_by_key(|&i| self.tabs[i].started)
+                    })
                     .unwrap_or(self.active);
                 let r = self.cancel(i, cx).map(|_| json!({ "cancelling": i }));
                 now(self, r, window, cx, done)
@@ -550,7 +555,15 @@ impl AppView {
                 Err(e) => now(self, Err(e), window, cx, done),
             },
             "import_csv" => match self.conn_by_name(&s("connection")) {
-                Ok(id) => self.import_csv(id, s("table"), s("path").into(), window, cx, done),
+                Ok(id) => self.import_csv(
+                    id,
+                    s("table"),
+                    s("path").into(),
+                    Some(a["confirm"].as_bool().unwrap_or(false)),
+                    window,
+                    cx,
+                    done,
+                ),
                 Err(e) => now(self, Err(e), window, cx, done),
             },
             "open_script" => {

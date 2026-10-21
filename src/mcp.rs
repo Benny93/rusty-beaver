@@ -72,6 +72,12 @@ pub struct IndexArg {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct CancelArg {
+    /// 0-based tab index as listed by get_state; default: the query that has run longest.
+    pub index: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ViewArg {
     /// "data", "columns" or "ddl" (table tabs only).
     pub view: String,
@@ -125,6 +131,8 @@ pub struct ImportArg {
     pub table: String,
     /// Absolute path of the CSV file.
     pub path: String,
+    /// Required (true) on production connections.
+    pub confirm: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -583,10 +591,13 @@ impl Tools {
     }
 
     #[tool(
-        description = "Cancel a running query (default: the first tab that is running). The run_sql call waiting for it returns the cancellation error."
+        description = "Cancel a running query (default: the one that has run longest). The run_sql call waiting for it returns the cancellation error."
     )]
-    async fn cancel_query(&self) -> Result<CallToolResult, McpError> {
-        self.ui("cancel_query", json!({})).await
+    async fn cancel_query(
+        &self,
+        Parameters(a): Parameters<CancelArg>,
+    ) -> Result<CallToolResult, McpError> {
+        self.ui("cancel_query", json!({ "index": a.index })).await
     }
 
     #[tool(
@@ -683,7 +694,7 @@ impl Tools {
     ) -> Result<CallToolResult, McpError> {
         self.ui(
             "import_csv",
-            json!({ "connection": a.connection, "table": a.table, "path": a.path }),
+            json!({ "connection": a.connection, "table": a.table, "path": a.path, "confirm": a.confirm }),
         )
         .await
     }

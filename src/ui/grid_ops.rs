@@ -301,7 +301,11 @@ impl AppView {
                     .unwrap_or_default();
                 for (c, v) in values.into_iter().enumerate() {
                     // a blob's "[BLOB n bytes]" is no value to insert
-                    let generated = !listed.is_empty() && !listed.contains(&columns[c]);
+                    // SQLite only: Postgres and MySQL list generated columns too, and a column
+                    // added since the tab opened is missing there as well
+                    let generated = driver == Driver::Sqlite
+                        && !listed.is_empty()
+                        && !listed.contains(&columns[c]);
                     if let Some(v) =
                         v.filter(|v| !key.contains(&c) && !generated && !db::is_blob_text(v))
                     {

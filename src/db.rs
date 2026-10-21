@@ -468,6 +468,10 @@ pub fn connect(c: &ConnConfig) -> Result<Session, String> {
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let mut s = match c.driver {
         Driver::Sqlite => {
+            // no path is SQLite's private temporary database, gone with the connection
+            if c.database.trim().is_empty() {
+                return Err("no database file: give its path (or :memory:)".into());
+            }
             // read-only: a mistyped path is an error, not a new empty database
             let mut flags = rusqlite::OpenFlags::default();
             if c.read_only {
@@ -2856,6 +2860,12 @@ mod tests {
         };
         assert!(connect(&ro).is_err());
         assert!(!typo.exists());
+        // no path is SQLite's throwaway database: everything written there would be gone
+        assert!(
+            connect(&ConnConfig::default())
+                .err()
+                .is_some_and(|e| e.contains("database file"))
+        );
     }
 
     #[test]

@@ -832,7 +832,9 @@ impl AppView {
         let Some(ix) = self.conn_ix(id) else { return };
         let sql = self.conns[ix].cfg.driver.select_all(&table, "", 200);
         self.selected = Some((id, Some(table.clone())));
+        let count = self.tabs.len();
         let tab = self.open_tab(id, TabKind::Table(table.clone()), sql.clone(), window, cx);
+        let new_tab = self.tabs.len() > count; // not one already open for it
         let key = self.tabs[tab].grid.entity_id();
         // Columns view (and the key for editing), DDL, then the data.
         let t = table.clone();
@@ -850,6 +852,12 @@ impl AppView {
                 let Some(tab) = v.tab_ix(key) else {
                     return done(v, Err("the tab was closed".into()), window, cx);
                 };
+                // no columns: no such table (the catalog does not call it an error); the new
+                // tab goes again instead of staying empty (and in the session)
+                if new_tab && r.as_ref().is_ok_and(|(cols, _)| cols.rows.is_empty()) {
+                    let _ = v.close_tab(tab, window, cx);
+                    return done(v, Err(format!("no table {table:?}")), window, cx);
+                }
                 if let (Ok((cols, ddl)), Some(t)) = (r, v.tabs.get_mut(tab)) {
                     t.key = cols
                         .rows

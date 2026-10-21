@@ -66,6 +66,9 @@ def main():
             cols = call("describe_table", {"connection": DB, "table": "missions"})["rows"]
             assert ["leader_id", "INTEGER", "YES", "FK", "beavers.id"] in cols, cols
             assert "no table" in call("describe_table", {"connection": DB, "table": "usres"}, ok=False)
+            before = len(call("get_state")["tabs"])
+            call("open_table", {"connection": DB, "table": "usres"}, ok=False)
+            assert len(call("get_state")["tabs"]) == before  # no tab for a table that is not there
             # testing settings creates no database file
             typo = os.path.join(tmp, "typo.db")
             call("test_connection", {"name": "t", "driver": "sqlite", "database": typo}, ok=False)

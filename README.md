@@ -147,7 +147,7 @@ The installers are **unsigned**:
 
 ### Publishing updates
 
-`.github/workflows/winget.yml` submits a manifest update to [winget-pkgs](https://github.com/microsoft/winget-pkgs) for every published release (identifier `Benny93.RustyBeaver`). It needs:
+`.github/workflows/winget.yml` submits a manifest update to [winget-pkgs](https://github.com/microsoft/winget-pkgs) for every release, once the release workflow has attached all installers (identifier `Benny93.RustyBeaver`). It needs:
 1. A fork of `microsoft/winget-pkgs` under the same GitHub account.
 2. A classic personal access token with the `public_repo` and `workflow` scopes, stored as the repository secret `WINGET_TOKEN`.
 3. A first version submitted by hand (for example with `wingetcreate new <installer url>`). The action builds each update on the existing package, so it only works once that first version is merged.

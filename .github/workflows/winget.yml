@@ -1,5 +1,8 @@
 name: Publish to WinGet
 on:
+  # release.yml calls it once every installer is uploaded: a release that workflow creates
+  # with GITHUB_TOKEN starts no `release` workflows. Releases published by hand still do.
+  workflow_call:
   release:
     types: [released]
 

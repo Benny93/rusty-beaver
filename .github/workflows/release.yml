@@ -69,3 +69,8 @@ jobs:
             target/dist/*.exe
             target/dist/*.deb
             target/dist/*.AppImage
+
+  winget:
+    needs: package # every installer is attached by now
+    uses: ./.github/workflows/winget.yml
+    secrets: inherit

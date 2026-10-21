@@ -561,9 +561,15 @@ impl Session {
         let start = Instant::now();
         let mut v = match self {
             Session::Sqlite(c) => sqlite_query(c, sql),
-            // the capped form, else as it is (when it does not parse as a subquery: nothing ran)
-            Session::Postgres(c) => match pg_capped(sql) {
-                Some(capped) => pg_query(c, &capped).or_else(|_| pg_query(c, sql)),
+            Session::Postgres(c) => match pg_capped(sql).map(|capped| c.simple_query(&capped)) {
+                Some(Ok(messages)) => Ok(pg_results(messages)),
+                // Only a capped form that does not parse runs as typed: nothing of it ran. Any
+                // other error (cancel, division by zero) is the answer, not a reason to run the
+                // query again, uncapped.
+                Some(Err(e)) if e.code() == Some(&postgres::error::SqlState::SYNTAX_ERROR) => {
+                    pg_query(c, sql)
+                }
+                Some(Err(e)) => Err(pg_err(e)),
                 None => pg_query(c, sql),
             },
             Session::Mysql(c) => mysql_query(c, sql),
@@ -883,6 +889,8 @@ fn pg_capped(sql: &str) -> Option<String> {
         && matches!(heads[0].0.as_str(), "SELECT" | "WITH" | "VALUES" | "TABLE")
         && !is_write(sql);
     let body = sql.trim_end().trim_end_matches(';');
+    // "SELECT …; -- note": the ; inside would be a syntax error in the subquery
+    let reads = reads && !body.contains(';');
     // newlines: a trailing -- comment must not swallow the closing parenthesis
     reads.then(|| {
         format!(
@@ -893,10 +901,14 @@ fn pg_capped(sql: &str) -> Option<String> {
 }
 
 fn pg_query(c: &mut postgres::Client, sql: &str) -> Result<Vec<QueryResult>, String> {
+    Ok(pg_results(c.simple_query(sql).map_err(pg_err)?))
+}
+
+fn pg_results(messages: Vec<postgres::SimpleQueryMessage>) -> Vec<QueryResult> {
     use postgres::SimpleQueryMessage as M;
     let mut out = vec![];
     let mut current: Option<QueryResult> = None;
-    for msg in c.simple_query(sql).map_err(pg_err)? {
+    for msg in messages {
         match msg {
             M::RowDescription(cols) => {
                 current = Some(QueryResult {
@@ -923,7 +935,7 @@ fn pg_query(c: &mut postgres::Client, sql: &str) -> Result<Vec<QueryResult>, Str
             _ => {}
         }
     }
-    Ok(out)
+    out
 }
 
 /// Startup parameters for PostgreSQL. Empty fields are left out: plain PostgreSQL ignores an
@@ -2480,6 +2492,7 @@ mod tests {
             "SELECT * INTO t2 FROM t",
             "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d",
             "SHOW search_path",
+            "SELECT 1; -- note",
         ] {
             assert_eq!(pg_capped(not), None, "{not}");
         }

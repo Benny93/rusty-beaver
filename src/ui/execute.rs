@@ -238,12 +238,17 @@ impl AppView {
         let later_ends = heads.iter().skip(1).any(ends);
         // Smart commit: only a change opens the transaction; reads run inside an open one.
         let write = db::is_write(&sql);
-        let need_begin = manual && !in_tx && write && !first_ends && !mysql_ddl;
+        // session settings are writes for the prompts, but no data to put in a transaction
+        // (SQLite ignores PRAGMA foreign_keys inside one, DISCARD ALL refuses to run there)
+        let setting = heads
+            .first()
+            .is_some_and(|(w, _)| matches!(w.as_str(), "PRAGMA" | "SET" | "RESET" | "DISCARD"));
+        let need_begin = manual && !in_tx && write && !first_ends && !mysql_ddl && !setting;
         if manual && let Some(i) = self.conn_ix(conn) {
             let c = &mut self.conns[i];
             if first_ends {
                 (c.in_tx, c.tx_statements) = (false, 0);
-            } else if write && !mysql_ddl {
+            } else if write && !mysql_ddl && !setting {
                 (c.in_tx, c.tx_statements) = (true, c.tx_statements + 1);
             }
         }

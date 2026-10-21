@@ -169,6 +169,9 @@ def main():
             call("run_sql", {"connection": DB, "sql": "DELETE FROM missions"})
             call("rollback", {"connection": DB})
             assert q("SELECT count(*) FROM missions") == [(6,)]
+            # a session setting opens no transaction (SQLite ignores foreign_keys inside one)
+            call("run_sql", {"connection": DB, "sql": "PRAGMA foreign_keys = ON"})
+            assert not [c for c in call("get_state")["connections"] if c["name"] == DB][0]["in_transaction"]
             # marking the connection production keeps its open transaction
             call("run_sql", {"connection": DB, "sql": "INSERT INTO lodges(name, river) VALUES ('Prod Toggle', 'Main')"})
             call("edit_connection", {"connection": DB, "production": True})

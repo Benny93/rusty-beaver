@@ -1619,7 +1619,8 @@ fn writes(sql: &str, mysql: bool) -> bool {
     // Only as a statement's first word: "comment" and "lock" are column names too.
     const LEADING: &[&str] = &[
         "REPLACE", "COPY", "CALL", "DO", "LOAD", "VACUUM", "REINDEX", "CLUSTER", "COMMENT", "LOCK",
-        "IMPORT", "REFRESH", "ANALYZE", "OPTIMIZE", "REPAIR", "FLUSH", "RESET", "DISCARD",
+        "IMPORT", "REFRESH", "ANALYZE", "ANALYSE", "OPTIMIZE", "REPAIR", "FLUSH", "RESET",
+        "DISCARD",
     ];
     // Settings that switch read-only off: SET default_transaction_read_only = off, PRAGMA
     // query_only = OFF (also READ WRITE below, as in BEGIN READ WRITE).
@@ -1671,7 +1672,10 @@ fn writes(sql: &str, mysql: bool) -> bool {
                 let is = |list: &[&str]| list.iter().any(|w| w.eq_ignore_ascii_case(word));
                 if first && word.eq_ignore_ascii_case("EXPLAIN") {
                     explain = true;
-                } else if explain && word.eq_ignore_ascii_case("ANALYZE") {
+                } else if explain
+                    && (word.eq_ignore_ascii_case("ANALYZE")
+                        || word.eq_ignore_ascii_case("ANALYSE"))
+                {
                     explain = false;
                 }
                 if explain && !first {
@@ -2903,11 +2907,14 @@ mod tests {
         assert!(
             is_write("EXPLAIN ANALYZE DELETE FROM t")
                 && is_write("EXPLAIN (ANALYZE) DELETE FROM t")
+                && is_write("EXPLAIN ANALYSE DELETE FROM t") // Postgres takes the British spelling
+                && is_write("EXPLAIN (ANALYSE) DELETE FROM t")
         );
         assert!(is_write("EXPLAIN SELECT 1; DELETE FROM t"));
         for maintenance in [
             "REFRESH MATERIALIZED VIEW mv",
             "ANALYZE t",
+            "ANALYSE t",
             "OPTIMIZE TABLE t",
             "REPAIR TABLE t",
             "FLUSH TABLES",

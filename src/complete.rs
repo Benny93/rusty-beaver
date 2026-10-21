@@ -114,10 +114,27 @@ fn is_word(c: char) -> bool {
 /// `alias -> table` from `FROM t a`, `JOIN t AS a`, bare `FROM t` and `FROM t a, u b`.
 fn aliases(text: &str) -> HashMap<String, String> {
     let spaced = text.replace(',', " , "); // a comma is a word of its own
-    let words: Vec<&str> = spaced
-        .split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == ';')
-        .filter(|w| !w.is_empty())
-        .collect();
+    // words split at spaces and ( ) ; outside quotes: "my table" is one
+    let mut words: Vec<&str> = vec![];
+    let (mut start, mut quote) = (None, None);
+    for (i, c) in spaced.char_indices() {
+        if quote.is_some() {
+            quote = quote.filter(|q| *q != c);
+        } else if c.is_whitespace() || c == '(' || c == ')' || c == ';' {
+            words.extend(start.take().map(|s| &spaced[s..i]));
+        } else {
+            start.get_or_insert(i);
+            quote = Some(c).filter(|c| *c == '"' || *c == '`');
+        }
+    }
+    words.extend(start.map(|s| &spaced[s..]));
+    if quote.is_some() {
+        // a quote still being typed (b."lo FROM …): the plain split
+        words = spaced
+            .split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == ';')
+            .filter(|w| !w.is_empty())
+            .collect();
+    }
     let mut out = HashMap::new();
     for (i, w) in words.iter().enumerate() {
         if !(w.eq_ignore_ascii_case("from")
@@ -522,6 +539,14 @@ mod tests {
         assert_eq!(
             s.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(),
             ["name", "river"]
+        );
+        // a quoted name with a space is one name
+        let mut c = c;
+        c.set_columns("my table", vec![("x".into(), "INT".into())]);
+        let (_, s) = suggest("SELECT t. FROM \"my table\" t", 9, &c);
+        assert_eq!(
+            s.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(),
+            ["x"]
         );
         let (_, s) = suggest("SELECT beavers.lo FROM beavers", 17, &c);
         assert_eq!(s.len(), 1);

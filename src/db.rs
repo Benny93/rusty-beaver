@@ -1701,17 +1701,22 @@ pub fn statement_at(sql: &str, offset: usize, mysql: bool) -> std::ops::Range<us
 pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String {
     match ext.to_ascii_lowercase().as_str() {
         "json" => {
-            // a repeated name (a.id, b.id) gets a suffix instead of overwriting: id, id_2
-            let mut seen = std::collections::HashMap::new();
+            // a repeated name (a.id, b.id) gets a suffix instead of overwriting: id, id_2 (one
+            // that is no other column's name either)
+            let mut used = std::collections::HashSet::new();
             let keys: Vec<String> = r
                 .columns
                 .iter()
-                .map(
-                    |c| match seen.entry(c.clone()).and_modify(|n| *n += 1).or_insert(1) {
-                        1 => c.clone(),
-                        n => format!("{c}_{n}"),
-                    },
-                )
+                .map(|c| {
+                    let mut key = c.clone();
+                    let mut n = 1;
+                    while used.contains(&key) || n > 1 && r.columns.contains(&key) {
+                        n += 1;
+                        key = format!("{c}_{n}");
+                    }
+                    used.insert(key.clone());
+                    key
+                })
                 .collect();
             let rows: Vec<serde_json::Value> = r
                 .rows
@@ -2282,6 +2287,14 @@ mod tests {
         let j: serde_json::Value =
             serde_json::from_str(&export(&dup, "json", Driver::Sqlite, "t")).unwrap();
         assert_eq!((&j[0]["id"], &j[0]["id_2"]), (&"1".into(), &"2".into()));
+        let clash = QueryResult {
+            columns: vec!["id".into(), "id".into(), "id_2".into()],
+            rows: cells(vec![vec!["1", "2", "3"]]),
+            ..Default::default()
+        };
+        let j: serde_json::Value =
+            serde_json::from_str(&export(&clash, "json", Driver::Sqlite, "t")).unwrap();
+        assert_eq!(j[0].as_object().unwrap().len(), 3, "{j}"); // no value lost
         assert_eq!(
             export(&r, "tsv", Driver::Sqlite, "t"),
             "a\tb\n1\tNULL\nx|y\tit's\n"

@@ -1237,6 +1237,9 @@ fn mysql_query(c: &mut mysql::Conn, sql: &str) -> Result<Vec<QueryResult>, Strin
     // Which statement each result belongs to: one result each, a CALL its result sets and then
     // an OK packet, dropped below. An UPDATE that matched nothing looks like that packet.
     let heads = statement_heads(sql, true);
+    // a BEGIN … END body is split at its ; into heads the server sends no results for: the
+    // count is off, so nothing is dropped then
+    let counted = !heads.iter().any(|(w, _)| w == "END");
     let (mut stmt, mut call_sets) = (0, 0);
     let mut out = vec![];
     let mut result = c.query_iter(sql).map_err(|e| e.to_string())?;
@@ -1279,7 +1282,7 @@ fn mysql_query(c: &mut mysql::Conn, sql: &str) -> Result<Vec<QueryResult>, Strin
                 .collect();
             push_row(&mut r, cells);
         }
-        let call = heads.get(stmt).is_some_and(|(w, _)| w == "CALL");
+        let call = counted && heads.get(stmt).is_some_and(|(w, _)| w == "CALL");
         if call && !r.columns.is_empty() {
             call_sets += 1; // more of this CALL's result sets may follow
             out.push(r);

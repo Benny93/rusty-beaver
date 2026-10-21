@@ -129,14 +129,15 @@ impl Driver {
             }
             Driver::Postgres => {
                 // pg_constraint pairs the columns of composite keys, and constraint names are
-                // only unique per table
+                // only unique per table. conparentid = 0: not the copies Postgres keeps for each
+                // partition of a referenced partitioned table
                 "SELECT cn.nspname || '.' || cr.relname, a.attname, fn.nspname || '.' || fr.relname, af.attname \
                 FROM pg_constraint c CROSS JOIN LATERAL unnest(c.conkey, c.confkey) AS k(att, fatt) \
                 JOIN pg_class cr ON cr.oid = c.conrelid JOIN pg_namespace cn ON cn.oid = cr.relnamespace \
                 JOIN pg_class fr ON fr.oid = c.confrelid JOIN pg_namespace fn ON fn.oid = fr.relnamespace \
                 JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.att \
                 JOIN pg_attribute af ON af.attrelid = c.confrelid AND af.attnum = k.fatt \
-                WHERE c.contype = 'f' AND cn.nspname NOT IN ('pg_catalog','information_schema') ORDER BY 1"
+                WHERE c.contype = 'f' AND c.conparentid = 0 AND cn.nspname NOT IN ('pg_catalog','information_schema') ORDER BY 1"
             }
             Driver::Mysql => {
                 // a table of another database by its full name: not a same-named one here

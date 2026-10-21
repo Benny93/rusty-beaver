@@ -216,7 +216,9 @@ fn lex(sql: &str, mysql: bool) -> Vec<Tok<'_>> {
                 if i == start + 1 && b"EeNnXxBb".contains(&c) && b.get(i) == Some(&b'\'') {
                     i += 1;
                     while i < b.len() && (b[i] != b'\'' || b.get(i + 1) == Some(&b'\'')) {
-                        i += if b[i] == b'\'' || c.eq_ignore_ascii_case(&b'e') && b[i] == b'\\' {
+                        i += if b[i] == b'\''
+                            || (mysql || c.eq_ignore_ascii_case(&b'e')) && b[i] == b'\\'
+                        {
                             2
                         } else {
                             1
@@ -435,7 +437,9 @@ mod tests {
         assert!(!half.contains(". 5") && !half.contains(". 25"), "{half}");
         assert!(format_sql("select a=äb from t").contains("a = äb"));
         let lit = r"'a\'b, from c'";
-        assert!(super::format_sql_as(&format!("select {lit} from t"), true).contains(lit));
+        for lit in [lit, r"N'a\'b, from c'"] {
+            assert!(super::format_sql_as(&format!("select {lit} from t"), true).contains(lit));
+        }
         let my = format_sql("select a # note\n+ 1 from t");
         assert!(my.contains("# note\n"), "{my}"); // + 1 stays out of the MySQL comment
         for kept in [":id", "$1", "E'it\\'s'"] {

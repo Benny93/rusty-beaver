@@ -125,9 +125,8 @@ fn aliases(text: &str) -> HashMap<String, String> {
         {
             continue;
         }
-        let Some(table) = words
-            .get(i + 1)
-            .map(|t| t.trim_matches(|c| c == '"' || c == '`'))
+        let Some(table) = words.get(i + 1).map(|t| t.replace(['"', '`'], ""))
+        // "public"."users" -> public.users
         else {
             continue;
         };
@@ -351,5 +350,7 @@ mod tests {
         assert_eq!(s[0].label, "river");
         let (_, s) = suggest("SELECT dams.h FROM public.dams", 13, &c);
         assert_eq!(s[0].label, "height");
+        let (_, s) = suggest("SELECT d.h FROM \"public\".\"dams\" d", 10, &c);
+        assert_eq!(s[0].label, "height"); // the quoting the app writes itself
     }
 }

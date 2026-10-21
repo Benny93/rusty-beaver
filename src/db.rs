@@ -184,8 +184,9 @@ impl Changes {
             .map(|k| k.0)
             .filter(|r| !self.deleted.contains(r) && !self.inserted.contains(r))
             .collect();
+        // a row added and deleted again is no change
         edited_rows.len()
-            + self.deleted.len()
+            + self.deleted.difference(&self.inserted).count()
             + self
                 .inserted
                 .iter()
@@ -219,7 +220,7 @@ impl Changes {
                 .join(" AND ")
         };
         if key.is_empty() && self.cells.keys().any(|k| !self.inserted.contains(&k.0))
-            || key.is_empty() && !self.deleted.is_empty()
+            || key.is_empty() && self.deleted.iter().any(|r| !self.inserted.contains(r))
         {
             return Err(
                 "this table has no primary key, so rows cannot be changed from the grid; use SQL"
@@ -782,7 +783,14 @@ fn sqlite_query(c: &rusqlite::Connection, sql: &str) -> Result<Vec<QueryResult>,
     while let Some(mut stmt) = batch.next().map_err(|e| e.to_string())? {
         let n = stmt.column_count();
         if n == 0 {
+            // changes() keeps the last INSERT/UPDATE/DELETE's count through DDL and COMMIT
+            let before = c.total_changes();
             let changed = stmt.execute([]).map_err(|e| e.to_string())?;
+            let changed = if c.total_changes() == before {
+                0
+            } else {
+                changed
+            };
             out.push(QueryResult {
                 affected: Some(changed as u64),
                 ..Default::default()
@@ -805,6 +813,9 @@ fn sqlite_query(c: &rusqlite::Connection, sql: &str) -> Result<Vec<QueryResult>,
                 })
                 .collect();
             push_row(&mut r, cells);
+            if r.truncated {
+                break; // the rest would be read only to be dropped
+            }
         }
         out.push(r);
     }
@@ -1257,6 +1268,12 @@ fn param_spans(sql: &str) -> Vec<(std::ops::Range<usize>, String)> {
                     i += 1;
                 }
             }
+            b'$' => {
+                if let Some(end) = dollar_quote_end(sql, i) {
+                    i = end;
+                    continue;
+                }
+            }
             b':' if b.get(i + 1) == Some(&b':') => i += 1,
             b':' if i > 0 && b[i - 1] == b':' => {}
             b':' if b
@@ -1506,7 +1523,7 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
             serde_json::to_string_pretty(&rows).unwrap() + "\n"
         }
         "md" | "markdown" => {
-            let esc = |s: &str| s.replace('|', "\\|").replace('\n', " ");
+            let esc = |s: &str| s.replace('|', "\\|").replace(['\r', '\n'], " ");
             let mut out = format!(
                 "| {} |\n|{}|\n",
                 r.columns
@@ -1527,7 +1544,7 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
         "txt" | "text" => {
             // Aligned plain text, as DBeaver's Text view; long cells are cut at 60 characters.
             let cut = |v: &str| -> String {
-                let v = v.replace(['\n', '\t'], " ");
+                let v = v.replace(['\r', '\n', '\t'], " ");
                 if v.chars().count() > 60 {
                     format!("{}…", v.chars().take(59).collect::<String>())
                 } else {
@@ -1571,7 +1588,7 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
         "tsv" => {
             let line = |row: &[String]| {
                 row.iter()
-                    .map(|v| v.replace(['\t', '\n'], " "))
+                    .map(|v| v.replace(['\t', '\r', '\n'], " "))
                     .collect::<Vec<_>>()
                     .join("\t")
             };
@@ -1610,12 +1627,13 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
     }
 }
 
-/// Parse RFC 4180 CSV (quoted fields, "" escapes, CRLF or LF); blank lines are skipped.
+/// Parse RFC 4180 CSV (quoted fields, "" escapes, CRLF or LF); blank lines are skipped, a
+/// line holding just "" is a row with one empty field.
 pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
     let mut rows = vec![];
     let (mut row, mut field) = (vec![], String::new());
     let mut chars = text.trim_start_matches('\u{feff}').chars().peekable();
-    let mut quoted = false;
+    let (mut quoted, mut had_quote) = (false, false);
     while let Some(c) = chars.next() {
         match (quoted, c) {
             (true, '"') if chars.peek() == Some(&'"') => {
@@ -1624,20 +1642,21 @@ pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
             }
             (true, '"') => quoted = false,
             (true, c) => field.push(c),
-            (false, '"') if field.is_empty() => quoted = true,
+            (false, '"') if field.is_empty() => (quoted, had_quote) = (true, true),
             (false, ',') => row.push(std::mem::take(&mut field)),
             (false, '\r') => {}
             (false, '\n') => {
                 row.push(std::mem::take(&mut field));
-                if !(row.len() == 1 && row[0].is_empty()) {
+                if had_quote || !(row.len() == 1 && row[0].is_empty()) {
                     rows.push(std::mem::take(&mut row));
                 }
                 row.clear();
+                had_quote = false;
             }
             (false, c) => field.push(c),
         }
     }
-    if !field.is_empty() || !row.is_empty() {
+    if had_quote || !field.is_empty() || !row.is_empty() {
         row.push(field);
         rows.push(row);
     }
@@ -1685,8 +1704,10 @@ pub fn csv_inserts(driver: Driver, table: &str, text: &str) -> Result<Vec<String
 
 /// RFC 4180 CSV.
 pub fn to_csv(r: &QueryResult) -> String {
+    let one_column = r.columns.len() == 1;
     let cell = |s: &str| {
-        if s.contains([',', '"', '\n', '\r']) {
+        // an empty line would read as a blank line: "" keeps a one-column row
+        if s.contains([',', '"', '\n', '\r']) || one_column && s.is_empty() {
             format!("\"{}\"", s.replace('"', "\"\""))
         } else {
             s.to_string()
@@ -1746,6 +1767,14 @@ mod tests {
             (v[1].affected, v[2].rows.len(), v[3].rows[0][0].as_str()),
             (Some(2), 2, "2")
         );
+        // DDL after a write reports no rows, not the write's count again
+        let v = s.query_all("DELETE FROM t; CREATE TABLE x(a);").unwrap();
+        assert_eq!((v[0].affected, v[1].affected), (Some(2), Some(0)));
+        let mut c = Changes::default();
+        c.inserted.insert(5);
+        c.deleted.insert(5);
+        assert!(c.is_empty()); // added, then deleted again
+        assert_eq!(c.to_sql(Driver::Sqlite, "t", &[], &[], &[]), Ok(vec![]));
     }
 
     #[test]
@@ -1764,6 +1793,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(to_csv(&r), "a,b\r\n\"x,y\",\"q\"\"\"\r\n");
+        let one = QueryResult {
+            columns: vec!["note".into()],
+            rows: vec![vec!["".into()], vec!["x".into()], vec!["".into()]],
+            ..Default::default()
+        };
+        assert_eq!(parse_csv(&to_csv(&one)).len(), 4); // header + 3 rows, none lost
+        assert_eq!(parse_csv("a\n\nb\n").len(), 2); // a blank line is still skipped
     }
 
     #[test]
@@ -2061,6 +2097,7 @@ mod tests {
         let sql =
             "SELECT ':skip', x::int FROM t -- :nope\nWHERE a = :rank AND b > :min AND c = :rank";
         assert_eq!(params(sql), ["rank", "min"]);
+        assert_eq!(params("SELECT $$it's :no$$, :id"), ["id"]);
         let v: std::collections::HashMap<String, String> = [
             ("rank".to_string(), "'Private'".to_string()),
             ("min".into(), "3".into()),

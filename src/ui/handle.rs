@@ -682,15 +682,27 @@ impl AppView {
                 } else {
                     Source::Statement
                 };
+                // A refusal (empty editor, busy tab, unsaved edits) answers at once: report it
+                // instead of "started".
+                let refused = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let seen = refused.clone();
                 self.run(
                     self.active,
                     src,
                     max_rows,
                     window,
                     cx,
-                    Box::new(|_, _, _, _| {}),
+                    Box::new(move |_, r, _, _| {
+                        if let Err(e) = r {
+                            seen.borrow_mut().get_or_insert(e);
+                        }
+                    }),
                 );
-                let r = match &self.params {
+                if let Some(e) = refused.borrow_mut().take() {
+                    return now(self, Err(e), window, cx, done);
+                }
+                let key = self.tab_key(self.active);
+                let r = match self.params.as_ref().filter(|p| Some(p.tab) == key) {
                     Some(p) => {
                         json!({ "waiting_for_parameters": p.inputs.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>() })
                     }

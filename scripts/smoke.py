@@ -73,6 +73,8 @@ def main():
             assert len(r["results"]) == 2 and r["rows"] == [["2"]]
             assert call("get_results", {"index": 0})["rows"] == [["1"]]
             assert "no such column" in call("run_sql", {"sql": "SELECT nope"}, ok=False)
+            call("new_sql_editor", {"connection": DB})
+            assert "empty" in call("execute_editor", {}, ok=False)  # refused, not "started"
 
         def params_format_explain():
             r = call("run_sql", {"sql": "SELECT count(*) FROM beavers WHERE rank = :rank", "params": {"rank": "'Private'"}})

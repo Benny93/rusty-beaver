@@ -535,6 +535,11 @@ impl AppView {
             }
             "search_results" => {
                 let r = match self.tabs.get(self.active) {
+                    // no search box there: the user could not see or clear it
+                    Some(t) if matches!(t.kind, TabKind::Table(_)) => {
+                        Err("a table tab has no search: use set_filter (a WHERE clause)"
+                            .to_string())
+                    }
                     Some(t) => {
                         let text = s("text");
                         t.search

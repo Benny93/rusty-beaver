@@ -122,6 +122,9 @@ def main():
             ddl = call("set_table_view", {"view": "ddl"})["ddl"]
             assert ddl.startswith("CREATE TABLE lodges"), ddl
             call("set_table_view", {"view": "data"})
+            # table tabs have no search box: a search there could not be cleared by the user
+            call("open_table", {"connection": DB, "table": "lodges"})
+            assert "set_filter" in call("search_results", {"text": "x"}, ok=False)
             # a Load more that fails does not make the next one fetch two pages
             call("run_sql", {"connection": DB, "sql": "CREATE TABLE big AS WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1000) SELECT i FROM n"})
             assert call("open_table", {"connection": DB, "table": "big"})["row_count"] == 200

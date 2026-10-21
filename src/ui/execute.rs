@@ -243,6 +243,10 @@ impl AppView {
         // "UPDATE …; COMMIT" ends it too, once the script ran through
         // ponytail: statements after the COMMIT run outside a transaction, as typed
         let later_ends = heads.iter().skip(1).any(ends);
+        // BEGIN / START TRANSACTION typed by the user: the transaction later writes run in
+        let opens = heads
+            .first()
+            .is_some_and(|(w1, w2)| w1 == "BEGIN" || w1 == "START" && w2 == "TRANSACTION");
         // Smart commit: only a change opens the transaction; reads run inside an open one.
         let write = db::is_write(&sql);
         // session settings are writes for the prompts, but no data to put in a transaction
@@ -303,6 +307,14 @@ impl AppView {
                         }
                         Err(_) => {}
                     }
+                }
+                if manual
+                    && opens
+                    && r.is_ok()
+                    && let Some(i) = v.conn_ix(conn)
+                    && !v.conns[i].in_tx
+                {
+                    (v.conns[i].in_tx, v.conns[i].tx_statements) = (true, 0);
                 }
                 // which statement failed is unknown: say so rather than guess
                 let r = match r {

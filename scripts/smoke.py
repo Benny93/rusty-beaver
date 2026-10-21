@@ -257,6 +257,11 @@ def main():
             call("run_sql", {"connection": DB, "sql": "INSERT INTO u VALUES (1)"}, ok=False)
             call("rollback", {"connection": DB}, ok=False)  # SQLite: no transaction is active
             assert not [c for c in call("get_state")["connections"] if c["name"] == DB][0]["in_transaction"]
+            # a BEGIN typed in manual mode opens the transaction the next write uses
+            call("run_sql", {"connection": DB, "sql": "BEGIN"})
+            call("run_sql", {"connection": DB, "sql": "INSERT INTO u VALUES (5)"})
+            call("rollback", {"connection": DB})
+            assert q("SELECT count(*) FROM u WHERE id = 5") == [(0,)]
             # ROLLBACK TRANSACTION TO a savepoint keeps the transaction open
             call("run_sql", {"connection": DB, "sql": "INSERT INTO lodges(name, river) VALUES ('Sp Lodge', 'Main')"})
             call("run_sql", {"connection": DB, "sql": "SAVEPOINT s"})

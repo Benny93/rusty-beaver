@@ -191,7 +191,11 @@ impl AppView {
                         t.view = match s("view").as_str() {
                             "columns" => TableView::Columns,
                             "ddl" => TableView::Ddl,
-                            _ => TableView::Data,
+                            "data" => TableView::Data,
+                            v => {
+                                let e = format!("view {v:?}: data, columns or ddl");
+                                return now(self, Err(e), window, cx, done);
+                            }
                         };
                         let ddl =
                             (t.view == TableView::Ddl).then(|| t.ddl.read(cx).value().to_string());
@@ -366,6 +370,11 @@ impl AppView {
             "record_view" => {
                 let r = match self.tabs.get_mut(self.active) {
                     Some(t) => {
+                        let rows = t.grid.read(cx).delegate().order.len();
+                        if let Some(row) = a["row"].as_u64().filter(|&r| r as usize >= rows) {
+                            let e = format!("no row {row}; the grid has {rows}");
+                            return now(self, Err(e), window, cx, done);
+                        }
                         t.record = a["on"].as_bool().unwrap_or(!t.record);
                         if let Some(row) = a["row"].as_u64() {
                             t.cell = Some((row as usize, t.cell.map(|c| c.1).unwrap_or(0)));
@@ -400,11 +409,16 @@ impl AppView {
                         let g = t.grid.read(cx).delegate();
                         let (label, numeric) = crate::grid::chart_columns(&g.r);
                         if let Some(name) = a["column"].as_str() {
-                            t.chart_col =
+                            let Some(c) =
                                 g.r.columns
                                     .iter()
                                     .position(|c| c.eq_ignore_ascii_case(name))
-                                    .filter(|c| numeric.contains(c));
+                                    .filter(|c| numeric.contains(c))
+                            else {
+                                let e = format!("{name:?} is no numeric column of the result");
+                                return now(self, Err(e), window, cx, done);
+                            };
+                            t.chart_col = Some(c);
                         }
                         Ok(json!({
                             "chart": t.chart,
@@ -497,6 +511,18 @@ impl AppView {
                 now(self, Ok(json!({ "value_panel": false })), window, cx, done)
             }
             "show_value" => {
+                // no row: the selected cell
+                let mut a = a.clone();
+                if a["row"].is_null()
+                    && let Some((row, col)) = self.tabs.get(self.active).and_then(|t| t.cell)
+                {
+                    a["row"] = json!(row);
+                    if a["column"].is_null()
+                        && let Some(t) = self.tabs.get(self.active)
+                    {
+                        a["column"] = json!(t.grid.read(cx).delegate().r.columns.get(col));
+                    }
+                }
                 let r = self.cell_arg(&a, cx).map(|(row, col)| {
                     let t = &mut self.tabs[self.active];
                     t.cell = Some((row, col));
@@ -651,10 +677,13 @@ impl AppView {
                 now(self, Ok(json!(items)), window, cx, done)
             }
             "set_sidebar" => {
-                let panel = if s("panel") == "history" {
-                    Sidebar::History
-                } else {
-                    Sidebar::Navigator
+                let panel = match s("panel").as_str() {
+                    "history" => Sidebar::History,
+                    "navigator" | "" => Sidebar::Navigator,
+                    p => {
+                        let e = format!("panel {p:?}: navigator or history");
+                        return now(self, Err(e), window, cx, done);
+                    }
                 };
                 self.set_sidebar(panel, s("filter"), window, cx);
                 now(
@@ -684,7 +713,11 @@ impl AppView {
             "set_theme" => {
                 match s("mode").as_str() {
                     "system" => self.follow_system_theme(window, cx),
-                    m => self.set_theme(m != "light", window, cx),
+                    m @ ("dark" | "light") => self.set_theme(m == "dark", window, cx),
+                    m => {
+                        let e = format!("mode {m:?}: dark, light or system");
+                        return now(self, Err(e), window, cx, done);
+                    }
                 }
                 now(
                     self,

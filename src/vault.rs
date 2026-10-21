@@ -199,6 +199,8 @@ fn decode(s: &str) -> String {
     while i < b.len() {
         let hex = b
             .get(i + 1..i + 3)
+            // two hex digits: from_str_radix would also take "+5"
+            .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
             .and_then(|h| std::str::from_utf8(h).ok())
             .and_then(|h| u8::from_str_radix(h, 16).ok());
         match (b[i], hex) {
@@ -473,6 +475,7 @@ mod tests {
 
     #[test]
     fn references_and_query_strings() {
+        assert_eq!(decode("a%+5b%2Fc"), "a% 5b/c"); // %+5 is no escape (+ is a space)
         assert_eq!(
             parse_ref("vault:kv/data/app#password").unwrap(),
             ("kv/data/app".to_string(), Some("password".to_string()))

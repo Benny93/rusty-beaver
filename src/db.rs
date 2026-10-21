@@ -1884,6 +1884,13 @@ pub fn statement_at(sql: &str, offset: usize, mysql: bool) -> std::ops::Range<us
             (!text.trim().is_empty()).then(|| start..w[0] + text.trim_end().len())
         })
         .collect();
+    // a comment after the last ; (SELECT 1; -- note) is no statement to run
+    let code: Vec<_> = pieces
+        .iter()
+        .filter(|r| !statement_heads(&sql[(*r).clone()], mysql).is_empty())
+        .cloned()
+        .collect();
+    let pieces = if code.is_empty() { pieces } else { code };
     pieces
         .iter()
         .find(|r| r.start <= offset && offset <= r.end)
@@ -2966,6 +2973,12 @@ mod tests {
         assert_eq!(&f[statement_at(f, 3, false)], f);
         let m = r"SELECT 'O\'Brien;'; SELECT 2";
         assert_eq!(&m[statement_at(m, 3, true)], r"SELECT 'O\'Brien;';");
+        // a comment after the ; is no statement of its own
+        let c = "SELECT 1; -- get one";
+        assert_eq!(&c[statement_at(c, c.len(), false)], "SELECT 1;");
+        let c = "SELECT 1;\n/* note */";
+        assert_eq!(&c[statement_at(c, c.len(), false)], "SELECT 1;");
+        assert_eq!(&"-- x"[statement_at("-- x", 2, false)], "-- x");
     }
 
     #[test]

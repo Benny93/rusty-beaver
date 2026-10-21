@@ -243,6 +243,7 @@ fn oidc_login(
     port: u16,
     open: &dyn Fn(&str),
 ) -> Result<String, String> {
+    let mount = mount.trim().trim_matches('/'); // "/oidc/" is the mount oidc
     let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| format!("cannot listen on localhost:{port} for the Vault sign-in ({e}); is another `vault login` running?"))?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     let redirect = format!("http://localhost:{port}/oidc/callback");
@@ -617,6 +618,8 @@ mod tests {
         };
         let token = oidc_login(&addr, "oidc", "", 0, &browser).unwrap();
         assert_eq!(token, "s.fake");
+        // a mount typed as /oidc/ is the mount oidc
+        assert_eq!(oidc_login(&addr, "/oidc/", "", 0, &browser).unwrap(), "s.fake");
 
         remember(&addr, Some(token));
         let c = ConnConfig {

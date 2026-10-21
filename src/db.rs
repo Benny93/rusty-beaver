@@ -1304,6 +1304,17 @@ pub fn save_connections(list: &[ConnConfig]) -> Result<Vec<String>, String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
+    // A new file is for its owner only: without a keychain it holds passwords. write_atomic
+    // keeps the mode of the file it replaces.
+    #[cfg(unix)]
+    if !path.exists() {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let _ = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path);
+    }
     write_atomic(&path, serde_json::to_string_pretty(&file).unwrap()).map_err(|e| e.to_string())?;
     Ok(warnings)
 }
@@ -2442,6 +2453,15 @@ mod tests {
         assert!(!std::fs::read_to_string(&file).unwrap().contains("plain"));
         forget_password(&old[0]);
         assert_eq!(secrets::load(&old[0].id).unwrap(), None);
+        // A new connections file is for its owner only (it can hold passwords).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let _ = std::fs::remove_file(&file);
+            save_connections(&list).unwrap();
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "{mode:o}");
+        }
         // A file that does not parse is moved aside, not overwritten by the next save.
         std::fs::write(&file, r#"[{"name":"typo",}]"#).unwrap();
         let (_, _, note) = load_connections();

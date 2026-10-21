@@ -1825,7 +1825,12 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
             serde_json::to_string_pretty(&rows).unwrap() + "\n"
         }
         "md" | "markdown" => {
-            let esc = |s: &str| s.replace('|', "\\|").replace(['\r', '\n'], " ");
+            // backslashes first: a\|b must not turn into a\\|b, where the | ends the cell
+            let esc = |s: &str| {
+                s.replace('\\', "\\\\")
+                    .replace('|', "\\|")
+                    .replace(['\r', '\n'], " ")
+            };
             let mut out = format!(
                 "| {} |\n|{}|\n",
                 r.columns
@@ -2417,6 +2422,13 @@ mod tests {
         let j: serde_json::Value =
             serde_json::from_str(&export(&dup, "json", Driver::Sqlite, "t")).unwrap();
         assert_eq!((&j[0]["id"], &j[0]["id_2"]), (&"1".into(), &"2".into()));
+        // a backslash before a pipe: \\ \| so the pipe stays inside the cell
+        let bs = QueryResult {
+            columns: vec!["re".into()],
+            rows: cells(vec![vec![r"a\|b"]]),
+            ..Default::default()
+        };
+        assert!(export(&bs, "md", Driver::Sqlite, "t").contains(r"| a\\\|b |"));
         let clash = QueryResult {
             columns: vec!["id".into(), "id".into(), "id_2".into()],
             rows: cells(vec![vec!["1", "2", "3"]]),

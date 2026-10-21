@@ -106,6 +106,7 @@ impl AppView {
                 let vals: Vec<String> = g
                     .order
                     .iter()
+                    .filter(|id| !g.changes.deleted.contains(id)) // as shown()
                     .map(|&id| g.value(id, col))
                     .filter(|v| v != "NULL" && seen.insert(v.clone()))
                     .map(|v| {

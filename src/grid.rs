@@ -17,12 +17,15 @@ pub struct Grid {
     pub changes: Changes,
     /// Quick search: only rows with a cell containing this (lower-case) text are shown.
     pub search: String,
+    /// The column sort in effect, so rows a search brings back take their sorted place.
+    sort: Option<(usize, ColumnSort)>,
 }
 
 impl Grid {
     pub fn set(&mut self, r: QueryResult) {
         self.order = (0..r.rows.len()).collect();
         self.changes = Changes::default();
+        self.sort = None; // new rows come unsorted
         self.r = r;
         if !self.search.is_empty() {
             let s = self.search.clone();
@@ -45,6 +48,9 @@ impl Grid {
         let mut all: Vec<usize> = (0..n).collect();
         all.sort_by_key(|&id| (pos[id], id));
         self.order = all.into_iter().filter(|&id| self.matches(id)).collect();
+        if let Some((col, sort)) = self.sort {
+            self.sort_order(col, sort);
+        }
     }
 
     fn matches(&self, id: usize) -> bool {
@@ -70,6 +76,17 @@ impl Grid {
                 .and_then(|r| r.get(col))
                 .cloned()
                 .unwrap_or_default(),
+        }
+    }
+
+    fn sort_order(&mut self, col: usize, sort: ColumnSort) {
+        let keys: Vec<String> = (0..self.r.rows.len())
+            .map(|id| self.value(id, col))
+            .collect();
+        match sort {
+            ColumnSort::Default => self.order.sort_unstable(),
+            ColumnSort::Ascending => self.order.sort_by(|&a, &b| compare(&keys[a], &keys[b])),
+            ColumnSort::Descending => self.order.sort_by(|&a, &b| compare(&keys[b], &keys[a])),
         }
     }
 
@@ -257,14 +274,8 @@ impl TableDelegate for Grid {
         _: &mut Window,
         _: &mut Context<TableState<Self>>,
     ) {
-        let keys: Vec<String> = (0..self.r.rows.len())
-            .map(|id| self.value(id, col))
-            .collect();
-        match sort {
-            ColumnSort::Default => self.order.sort_unstable(),
-            ColumnSort::Ascending => self.order.sort_by(|&a, &b| compare(&keys[a], &keys[b])),
-            ColumnSort::Descending => self.order.sort_by(|&a, &b| compare(&keys[b], &keys[a])),
-        }
+        self.sort = Some((col, sort));
+        self.sort_order(col, sort);
     }
 
     fn render_td(
@@ -337,6 +348,21 @@ mod tests {
                 ("max", "b".into())
             ]
         );
+    }
+
+    #[test]
+    fn rows_a_search_brings_back_take_their_sorted_place() {
+        let mut g = Grid::default();
+        g.set(QueryResult {
+            columns: vec!["name".into()],
+            rows: vec![vec!["b".into()], vec!["c".into()], vec!["a".into()]],
+            ..Default::default()
+        });
+        (g.sort, g.order) = (Some((0, super::ColumnSort::Ascending)), vec![2, 0, 1]);
+        g.set_search("c");
+        assert_eq!(g.order, [1]);
+        g.set_search("");
+        assert_eq!(g.order, [2, 0, 1]); // a, b, c: still sorted
     }
 
     #[test]

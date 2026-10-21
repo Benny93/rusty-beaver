@@ -23,7 +23,11 @@ impl AppView {
         };
         let data = crate::grid::chart_data(g, label, value, 60);
         let shown = data.len();
-        let total = g.order.len();
+        let total = g
+            .order
+            .iter()
+            .filter(|id| !g.changes.deleted.contains(id)) // as chart_data
+            .count();
         v_flex()
             .size_full()
             .child(

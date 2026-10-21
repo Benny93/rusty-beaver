@@ -72,6 +72,13 @@ def main():
             assert r["row_count"] == 4, r
             tabs = call("get_state")["tabs"]
             assert [t["active"] for t in tabs] == [True, False], tabs
+            # a restored tab opened from the navigator does not load again when selected
+            call("open_table", {"connection": DB, "table": "beavers"})
+            call("edit_cell", {"row": 0, "column": "name", "value": "Kept"})
+            call("select_tab", {"index": 0})
+            call("select_tab", {"index": 1})
+            assert "pending" not in call("get_state")["status"], call("get_state")["status"]
+            call("revert_changes")
             call("close_tab", {"index": 1})
             call("close_tab", {"index": 0})
 

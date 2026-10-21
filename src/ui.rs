@@ -835,6 +835,7 @@ impl AppView {
         let count = self.tabs.len();
         let tab = self.open_tab(id, TabKind::Table(table.clone()), sql.clone(), window, cx);
         let new_tab = self.tabs.len() > count; // not one already open for it
+        self.tabs[tab].stale = false; // a restored tab: loaded now, not again when selected
         let key = self.tabs[tab].grid.entity_id();
         // Columns view (and the key for editing), DDL, then the data.
         let t = table.clone();

@@ -202,8 +202,11 @@ impl AppView {
                 .ghost()
                 .icon(icon)
                 .on_click(cx.listener(move |v, _, _, cx| {
-                    let t = &mut v.tabs[ix];
+                    let Some(t) = v.tabs.get_mut(ix) else { return };
                     let n = t.grid.read(cx).delegate().order.len();
+                    if n == 0 {
+                        return; // emptied since this was drawn: clamp(0, -1) would panic
+                    }
                     let (r, c) = t.cell.unwrap_or((0, 0));
                     t.cell = Some(((r as isize + delta).clamp(0, n as isize - 1) as usize, c));
                     cx.notify();

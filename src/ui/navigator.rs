@@ -187,7 +187,7 @@ impl AppView {
                                 v.open_table(id, n.clone(), w, cx, Box::new(|_, _, _, _| {}));
                                 return;
                             }
-                            let ix = v.conn_ix(id).unwrap_or(0);
+                            let Some(ix) = v.conn_ix(id) else { return };
                             if v.conns[ix].columns.iter().any(|(t, _)| *t == n) {
                                 v.conns[ix].columns.retain(|(t, _)| *t != n);
                                 cx.notify();

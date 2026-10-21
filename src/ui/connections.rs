@@ -234,6 +234,10 @@ impl AppView {
                 });
                 if let Err(e) = &out {
                     v.status = format!("Import failed (nothing written): {e}");
+                    if manual && let Some(i) = v.conn_ix(id) {
+                        let c = &mut v.conns[i];
+                        c.tx_statements = c.tx_statements.saturating_sub(n);
+                    }
                 }
                 // Refresh an open data tab of that table (unless it has unsaved edits).
                 if let Some(i) = v.tabs.iter().position(|t| {

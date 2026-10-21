@@ -36,6 +36,8 @@ impl AppView {
                     t.running = false;
                     if let Err(e) = &out {
                         t.message = Some(Err(e.clone()));
+                        // a refresh keeps the old diagram on screen: say why it is not new
+                        v.status = format!("ER diagram: {}", e.lines().next().unwrap_or_default());
                     }
                 }
                 cx.notify();

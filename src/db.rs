@@ -647,13 +647,22 @@ impl Session {
     }
 
     /// Run statements as one transaction: all of them or none. Inside a transaction the
-    /// user opened (manual commit, `own_tx` false) they just run; committing is up to them.
+    /// user opened (manual commit, `own_tx` false) they run behind a savepoint, so a failure
+    /// takes back the ones before it too; committing is up to the user.
     pub fn apply_in(&mut self, statements: &[String], own_tx: bool) -> Result<QueryResult, String> {
         if !own_tx {
+            self.query("SAVEPOINT rusty_beaver")?;
             let mut affected = 0;
             for s in statements {
-                affected += self.change(s).map_err(|e| format!("{e}\n(in: {s})"))?;
+                match self.change(s) {
+                    Ok(n) => affected += n,
+                    Err(e) => {
+                        let _ = self.query("ROLLBACK TO SAVEPOINT rusty_beaver");
+                        return Err(format!("{e}\n(none of them kept; in: {s})"));
+                    }
+                }
             }
+            self.query("RELEASE SAVEPOINT rusty_beaver")?;
             return Ok(QueryResult {
                 affected: Some(affected),
                 ..Default::default()
@@ -1878,6 +1887,17 @@ mod tests {
         ]);
         assert!(e.unwrap_err().contains("not found"));
         assert_eq!(s.query("SELECT count(*) FROM t").unwrap().rows[0][0], "3");
+        // In the user's transaction a failing batch takes back its earlier statements only.
+        s.begin().unwrap();
+        s.query("INSERT INTO t(name) VALUES ('kept')").unwrap();
+        let bad = ["INSERT INTO t(name) VALUES ('x')".into(), "nope".into()];
+        assert!(
+            s.apply_in(&bad, false)
+                .unwrap_err()
+                .contains("none of them kept")
+        );
+        s.query("COMMIT").unwrap();
+        assert_eq!(s.query("SELECT count(*) FROM t").unwrap().rows[0][0], "4");
         // No primary key: updates are refused, inserts are fine.
         assert!(
             c.to_sql(Driver::Sqlite, "t", &r.columns, &rows, &[])

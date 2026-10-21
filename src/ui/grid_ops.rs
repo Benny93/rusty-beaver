@@ -398,6 +398,10 @@ impl AppView {
                                 if let Some(t) = ix.and_then(|ix| v.tabs.get_mut(ix)) {
                                     t.message = Some(Err(e.clone()));
                                 }
+                                // taken back to the savepoint: not in the transaction
+                                if manual && let Some(c) = v.conn_ix(conn).map(|i| &mut v.conns[i]) {
+                                    c.tx_statements = c.tx_statements.saturating_sub(n);
+                                }
                                 cx.notify();
                                 done(v, Err(e), window, cx)
                             }

@@ -1606,11 +1606,19 @@ fn writes(sql: &str, mysql: bool) -> bool {
     while i < b.len() {
         match b[i] {
             b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
-            b'-' | b'#' if b[i] == b'#' && mysql || b[i] == b'-' && b.get(i + 1) == Some(&b'-') => {
+            // MySQL: -- starts a comment only before a space (1--1 is 1 - -1)
+            b'-' | b'#'
+                if b[i] == b'#' && mysql
+                    || b[i] == b'-'
+                        && b.get(i + 1) == Some(&b'-')
+                        && !(mysql && b.get(i + 2).is_some_and(|c| *c > b' ')) =>
+            {
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
                 }
             }
+            // MySQL runs the body of /*! … */
+            b'/' if mysql && b.get(i + 1) == Some(&b'*') && b.get(i + 2) == Some(&b'!') => i += 2,
             b'/' if b.get(i + 1) == Some(&b'*') => {
                 i += 2;
                 while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
@@ -2763,6 +2771,10 @@ mod tests {
         ));
         assert!(is_write("with x as (select 1) delete from t"));
         assert!(is_write("SELECT 1; Update t SET a = 1"));
+        // MySQL: --x is minus minus x, and the body of /*! … */ runs
+        assert!(is_write("SELECT 1--1; DROP TABLE t"));
+        assert!(is_write("SELECT 1 /*!50000 ; DROP TABLE t */"));
+        assert!(!is_write("SELECT 1 /* ; DROP TABLE t */"));
         assert!(!is_write("EXPLAIN SELECT * FROM updates_log"));
         assert!(is_write("REPLACE INTO t VALUES (1)"));
         assert!(is_write("SELECT $a$'$a$; DELETE FROM t; --'"));

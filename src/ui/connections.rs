@@ -193,13 +193,7 @@ impl AppView {
         let read = cx.background_spawn(async move {
             std::fs::read(&p)
                 .map_err(|e| format!("{}: {e}", p.display()))
-                .map(|bytes| {
-                    String::from_utf8(bytes).unwrap_or_else(|e| {
-                        // ponytail: not UTF-8 is read as Latin-1 (Excel's Windows-1252 but for
-                        // € and a few others); add encoding_rs if those matter
-                        e.into_bytes().iter().map(|&b| b as char).collect()
-                    })
-                })
+                .and_then(|bytes| db::csv_text(bytes).map_err(|e| format!("{}: {e}", p.display())))
                 .and_then(|text| db::csv_inserts(driver, &t, &text))
         });
         cx.spawn_in(window, async move |this, cx| {

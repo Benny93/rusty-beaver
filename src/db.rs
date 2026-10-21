@@ -920,11 +920,15 @@ fn pg_config(c: &ConnConfig) -> postgres::Config {
 
 /// The CAs the OS trusts, as a PEM file: the MySQL driver checks certificates only against its
 /// bundled public CAs plus such a file, so company CAs installed on the machine work too.
-/// Written on every use into the user's own config dir (not a shared, cleaned-up temp dir
-/// where another user could swap the CAs).
+/// Written once per run into the user's own config dir (not a shared, cleaned-up temp dir
+/// where another user could swap the CAs); a failed write is tried again next time.
 fn os_roots_pem() -> Result<std::path::PathBuf, String> {
     use base64::Engine as _;
     static PEM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    static WRITTEN: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    if let Some(p) = WRITTEN.get() {
+        return Ok(p.clone());
+    }
     let pem = PEM.get_or_init(|| {
         let mut out = String::new();
         let mut check = rustls::RootCertStore::empty();
@@ -947,7 +951,7 @@ fn os_roots_pem() -> Result<std::path::PathBuf, String> {
     std::fs::create_dir_all(&dir)
         .and_then(|_| write_atomic(&path, pem))
         .map_err(|e| format!("system CAs: {}: {e}", path.display()))?;
-    Ok(path)
+    Ok(WRITTEN.get_or_init(|| path).clone())
 }
 
 /// rustls for Postgres: with `verify`, the OS trust store checks the certificate; without, like
@@ -1095,13 +1099,21 @@ fn mysql_query(c: &mut mysql::Conn, sql: &str) -> Result<Vec<QueryResult>, Strin
 pub fn write_atomic(path: &std::path::Path, data: impl AsRef<[u8]>) -> std::io::Result<()> {
     // a symlinked file (dotfiles) is written where it points, the link stays
     let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    // unique per process and call: two writes of the same file at once don't share it
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut tmp = path.as_os_str().to_owned();
-    tmp.push(".tmp");
-    std::fs::write(&tmp, data)?;
-    if let Ok(m) = std::fs::metadata(path) {
-        let _ = std::fs::set_permissions(&tmp, m.permissions()); // keep a chmod 600
+    tmp.push(format!(".{}-{n}.tmp", std::process::id()));
+    let r = std::fs::write(&tmp, data).and_then(|_| {
+        if let Ok(m) = std::fs::metadata(path) {
+            let _ = std::fs::set_permissions(&tmp, m.permissions()); // keep a chmod 600
+        }
+        std::fs::rename(&tmp, path)
+    });
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp); // a full disk leaves no half file behind
     }
-    std::fs::rename(&tmp, path)
+    r
 }
 
 pub fn config_dir() -> PathBuf {
@@ -1706,12 +1718,19 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
 
 /// Parse RFC 4180 CSV (quoted fields, "" escapes, CRLF or LF); blank lines are skipped, a
 /// line holding just "" is a row with one empty field.
-/// The separator is the header's: `,`, else `;` (Excel in German and other locales) or tab.
+/// The separator is the one the header line has most of outside quotes: `,`, `;` (Excel in
+/// German and other locales) or tab; `,` on a tie.
 pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
-    let header = text.lines().next().unwrap_or_default();
+    let header = text
+        .trim_start_matches('\u{feff}')
+        .lines()
+        .next()
+        .unwrap_or_default();
+    let unquoted: String = header.split('"').step_by(2).collect();
     let sep = [',', ';', '\t']
         .into_iter()
-        .find(|&c| header.contains(c))
+        .rev()
+        .max_by_key(|&c| unquoted.matches(c).count())
         .unwrap_or(',');
     let mut rows = vec![];
     let (mut row, mut field) = (vec![], String::new());
@@ -1744,6 +1763,24 @@ pub fn parse_csv(text: &str) -> Vec<Vec<String>> {
         rows.push(row);
     }
     rows
+}
+
+/// A CSV file's text: UTF-8, else Latin-1 (what Excel writes in Western locales).
+/// ponytail: Latin-1 stands in for Windows-1252 (all but € and a few others); add encoding_rs
+/// if those matter
+pub fn csv_text(bytes: Vec<u8>) -> Result<String, String> {
+    if bytes.starts_with(&[0xFF, 0xFE]) || bytes.starts_with(&[0xFE, 0xFF]) {
+        return Err("UTF-16 text: save it as CSV UTF-8".into());
+    }
+    String::from_utf8(bytes).or_else(|e| {
+        let at = e.utf8_error().valid_up_to();
+        let bytes = e.into_bytes();
+        // UTF-8 before the bad byte (a BOM, umlauts): Latin-1 would garble all of them
+        if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) || !bytes[..at].is_ascii() {
+            return Err(format!("not valid UTF-8 at byte {at}"));
+        }
+        Ok(bytes.iter().map(|&b| b as char).collect())
+    })
 }
 
 /// INSERT statements for CSV text whose header row names the table's columns.
@@ -1790,7 +1827,7 @@ pub fn to_csv(r: &QueryResult) -> String {
     let one_column = r.columns.len() == 1;
     let cell = |s: &str| {
         // an empty line would read as a blank line: "" keeps a one-column row
-        if s.contains([',', '"', '\n', '\r']) || one_column && s.is_empty() {
+        if s.contains([',', ';', '\t', '"', '\n', '\r']) || one_column && s.is_empty() {
             format!("\"{}\"", s.replace('"', "\"\""))
         } else {
             s.to_string()
@@ -1884,6 +1921,18 @@ mod tests {
         assert_eq!(parse_csv(&to_csv(&one)).len(), 4); // header + 3 rows, none lost
         assert_eq!(parse_csv("a\n\nb\n").len(), 2); // a blank line is still skipped
         assert_eq!(parse_csv("id;name\n1;\"a;b\"\n")[1], ["1", "a;b"]); // German Excel
+        assert_eq!(
+            parse_csv("Nachname, Vorname;Ort;PLZ\nA, B;C;1\n")[1],
+            ["A, B", "C", "1"]
+        ); // most wins
+        assert_eq!(parse_csv("\"a;b\",c\n1,2\n")[0], ["a;b", "c"]); // quoted ; ignored
+        assert_eq!(csv_text(b"n\xe4me".to_vec()).unwrap(), "n\u{e4}me"); // Latin-1
+        assert!(csv_text("\u{e4}x".bytes().chain([0xFF]).collect()).is_err()); // mostly UTF-8
+        assert!(
+            csv_text(vec![0xFF, 0xFE, b'a', 0])
+                .unwrap_err()
+                .contains("UTF-16")
+        );
     }
 
     #[test]

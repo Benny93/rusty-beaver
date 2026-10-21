@@ -588,24 +588,30 @@ impl AppView {
     }
 
     /// Export the active grid; the format follows the file extension (csv, tsv, json, md, sql).
+    /// The format is the file's extension; `chosen` (the menu's) when that is none we know
+    /// (report_2024.10.21), else an error.
     pub(super) fn export_csv(
         &mut self,
         path: &std::path::Path,
+        chosen: Option<&str>,
         cx: &mut Context<Self>,
     ) -> Result<String, String> {
         if !path.is_absolute() {
             // relative to the app's working directory, which is / when started from Finder
             return Err(format!("{}: give an absolute path", path.display()));
         }
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("csv")
-            .to_ascii_lowercase();
-        if !EXPORT_FORMATS.iter().any(|f| f.0 == ext) && ext != "markdown" {
-            let known: Vec<&str> = EXPORT_FORMATS.iter().map(|f| f.0).collect();
-            return Err(format!("{ext:?} is no export format: {}", known.join(", ")));
-        }
+        let known = |e: &str| EXPORT_FORMATS.iter().any(|f| f.0 == e) || e == "markdown";
+        let ext = match path.extension().and_then(|e| e.to_str()) {
+            Some(e) if known(&e.to_ascii_lowercase()) => e.to_ascii_lowercase(),
+            e => match (chosen, e) {
+                (Some(c), _) => c.to_string(),
+                (None, None) => "csv".to_string(),
+                (None, Some(e)) => {
+                    let list: Vec<&str> = EXPORT_FORMATS.iter().map(|f| f.0).collect();
+                    return Err(format!("{e:?} is no export format: {}", list.join(", ")));
+                }
+            },
+        };
         let (text, rows) = self.export_text(&ext, cx)?;
         db::write_atomic(path, text).map_err(|e| format!("{}: {e}", path.display()))?;
         // A table tab holds one page: say so when the table has more rows.
@@ -657,10 +663,11 @@ impl AppView {
             &dirs::home_dir().unwrap_or_default(),
             Some(&format!("{name}.{ext}")),
         );
+        let ext = ext.to_string();
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(path))) = rx.await {
                 let _ = this.update(cx, |v, cx| {
-                    if let Err(e) = v.export_csv(&path, cx) {
+                    if let Err(e) = v.export_csv(&path, Some(&ext), cx) {
                         v.status = e;
                         cx.notify();
                     }

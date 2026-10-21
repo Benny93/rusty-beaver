@@ -721,7 +721,7 @@ impl AppView {
             }
             "export_csv" => {
                 let r = self
-                    .export_csv(std::path::Path::new(&s("path")), cx)
+                    .export_csv(std::path::Path::new(&s("path")), None, cx)
                     .map(|m| json!({ "ok": m }));
                 now(self, r, window, cx, done)
             }

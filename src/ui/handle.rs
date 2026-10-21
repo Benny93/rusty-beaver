@@ -375,6 +375,12 @@ impl AppView {
                 self.explain(self.active, sql, window, cx, done)
             }
             "format_sql" => {
+                if a["sql"].is_string()
+                    && self.tabs.is_empty()
+                    && let Err(e) = self.new_editor(None, window, cx)
+                {
+                    return now(self, Err(e), window, cx, done);
+                }
                 if let Some(text) = a["sql"].as_str()
                     && let Some(t) = self.tabs.get(self.active)
                 {
@@ -427,6 +433,7 @@ impl AppView {
                         t.chart = a["on"].as_bool().unwrap_or(true);
                         let g = t.grid.read(cx).delegate();
                         let (label, numeric) = crate::grid::chart_columns(&g.r);
+                        t.chart_col = None; // no column: the first numeric one
                         if let Some(name) = a["column"].as_str() {
                             let Some(c) =
                                 g.r.columns
@@ -443,6 +450,7 @@ impl AppView {
                             "chart": t.chart,
                             "label_column": label.map(|c| g.r.columns[c].clone()),
                             "value_columns": numeric.iter().map(|&c| g.r.columns[c].clone()).collect::<Vec<_>>(),
+                            "value_column": t.chart_col.or(numeric.first().copied()).map(|c| g.r.columns[c].clone()),
                         }))
                     }
                 };

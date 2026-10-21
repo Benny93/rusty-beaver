@@ -177,6 +177,18 @@ pub struct ChartArg {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct OnArg {
+    /// Show it (default true), or false to go back.
+    pub on: Option<bool>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct OpenArg {
+    /// true opens it, false closes it.
+    pub open: bool,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct ValueArg {
     /// 0-based row as currently shown in the grid.
     pub row: Option<usize>,
@@ -790,7 +802,7 @@ impl Tools {
     #[tool(description = "Open or close the keyboard shortcut overview (F1).")]
     async fn shortcuts(
         &self,
-        Parameters(a): Parameters<DialogArg>,
+        Parameters(a): Parameters<OpenArg>,
     ) -> Result<CallToolResult, McpError> {
         self.ui("shortcuts", json!({ "open": a.open })).await
     }
@@ -835,7 +847,7 @@ impl Tools {
     )]
     async fn results_as_text(
         &self,
-        Parameters(a): Parameters<ChartArg>,
+        Parameters(a): Parameters<OnArg>,
     ) -> Result<CallToolResult, McpError> {
         self.ui("results_as_text", json!({ "on": a.on })).await
     }
@@ -876,7 +888,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Count the rows of every table of a connection (opens a SQL tab with one UNION ALL query and runs it); returns table_name, row_count, biggest first."
+        description = "Count the rows of the tables of a connection, up to 200 tables (opens a SQL tab with one UNION ALL query and runs it); returns table_name, row_count, biggest first."
     )]
     async fn row_counts(
         &self,

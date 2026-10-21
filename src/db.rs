@@ -46,6 +46,25 @@ impl Driver {
         }
     }
 
+    /// `name` equals the cell value `v` (NULL: IS NULL), as a save's WHERE and a filter by
+    /// value compare it.
+    pub fn equals(self, name: &str, v: Option<&str>) -> String {
+        match v {
+            None => format!("{name} IS NULL"),
+            // SQLite: a column without a type keeps 5 and '5' apart, so a number is also
+            // compared as a number
+            Some(v)
+                if self == Driver::Sqlite
+                    && v.parse::<f64>().is_ok_and(f64::is_finite)
+                    && !v.starts_with(['+', '.'])
+                    && v.trim() == v =>
+            {
+                format!("({name} = {} OR {name} = {v})", self.literal(v))
+            }
+            Some(v) => format!("{name} = {}", self.literal(v)),
+        }
+    }
+
     /// `literal`, with None as NULL.
     pub fn literal_opt(self, v: Option<&str>) -> String {
         v.map(|v| self.literal(v)).unwrap_or_else(|| "NULL".into())
@@ -225,20 +244,7 @@ impl Changes {
         let q = |c: usize| driver.quote(&columns[c]);
         let where_key = |row: usize| {
             key.iter()
-                .map(|&c| match rows[row][c].as_deref() {
-                    None => format!("{} IS NULL", q(c)),
-                    // SQLite: a column without a type keeps 5 and '5' apart, so a number is
-                    // also compared as a number
-                    Some(v)
-                        if driver == Driver::Sqlite
-                            && v.parse::<f64>().is_ok_and(f64::is_finite)
-                            && !v.starts_with(['+', '.'])
-                            && v.trim() == v =>
-                    {
-                        format!("({0} = {1} OR {0} = {2})", q(c), driver.literal(v), v)
-                    }
-                    Some(v) => format!("{} = {}", q(c), driver.literal(v)),
-                })
+                .map(|&c| driver.equals(&q(c), rows[row][c].as_deref()))
                 .collect::<Vec<_>>()
                 .join(" AND ")
         };
@@ -2573,6 +2579,18 @@ mod tests {
                 vec!["it's".into(), "NULL".into()],
                 vec!["new".into(), "NULL".into()]
             ]
+        );
+        // A filter by value finds a number in a column without a type (5 is not '5' there).
+        s.query("CREATE TABLE u5(v); INSERT INTO u5 VALUES (5)")
+            .unwrap();
+        let w = Driver::Sqlite.equals("\"v\"", Some("5"));
+        assert_eq!(
+            s.query(&format!("SELECT * FROM u5 WHERE {w}"))
+                .unwrap()
+                .rows
+                .len(),
+            1,
+            "{w}"
         );
         // A failing statement rolls everything back.
         assert!(s.apply(&["DELETE FROM t".into(), "nope".into()]).is_err());

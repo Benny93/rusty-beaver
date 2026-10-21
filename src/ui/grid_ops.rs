@@ -82,9 +82,8 @@ impl AppView {
                 let id = g.row_id(row).unwrap_or_default();
                 let (name, v) = (driver.quote(&g.r.columns[col]), g.cell(id, col));
                 let cond = match (op == GridOp::FilterBy, v) {
-                    (true, None) => format!("{name} IS NULL"),
+                    (true, v) => driver.equals(&name, v.as_deref()),
                     (false, None) => format!("{name} IS NOT NULL"),
-                    (true, Some(v)) => format!("{name} = {}", driver.literal(&v)),
                     (false, Some(v)) => format!("{name} <> {}", driver.literal(&v)),
                 };
                 let tab = &mut self.tabs[ix];

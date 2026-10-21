@@ -467,7 +467,7 @@ impl AppView {
         } else {
             range
         };
-        let formatted = crate::format::format_sql(&text[range.clone()]);
+        let formatted = crate::format::format_sql_as(&text[range.clone()], self.mysql_tab(tab));
         let new = format!(
             "{}{}{}",
             &text[..range.start],

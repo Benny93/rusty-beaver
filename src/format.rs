@@ -113,7 +113,8 @@ enum Tok<'a> {
     Semi,
 }
 
-fn lex(sql: &str) -> Vec<Tok<'_>> {
+/// `mysql`: a backslash escapes the next character in '…' and "…" (MySQL's default).
+fn lex(sql: &str, mysql: bool) -> Vec<Tok<'_>> {
     let b = sql.as_bytes();
     let mut out = vec![];
     let mut i = 0;
@@ -127,9 +128,10 @@ fn lex(sql: &str) -> Vec<Tok<'_>> {
         match c {
             b'\'' | b'"' | b'`' => {
                 i += 1;
-                // a doubled quote ('it''s') stays inside
+                // a doubled quote ('it''s') stays inside, on MySQL also 'it\'s'
                 while i < b.len() && (b[i] != c || b.get(i + 1) == Some(&c)) {
-                    i += if b[i] == c { 2 } else { 1 };
+                    let escaped = b[i] == c || mysql && c != b'`' && b[i] == b'\\';
+                    i += if escaped { 2 } else { 1 };
                 }
                 i += 1;
                 out.push(Tok::Raw(&sql[start..i.min(b.len())]));
@@ -253,8 +255,14 @@ fn lex(sql: &str) -> Vec<Tok<'_>> {
     out
 }
 
+#[cfg(test)]
 pub fn format_sql(sql: &str) -> String {
-    let toks = lex(sql);
+    format_sql_as(sql, false)
+}
+
+/// `format_sql` for a dialect: MySQL strings take backslash escapes.
+pub fn format_sql_as(sql: &str, mysql: bool) -> String {
+    let toks = lex(sql, mysql);
     let mut out = String::new();
     let mut depth = 0usize; // parentheses
     let mut i = 0;
@@ -404,6 +412,8 @@ mod tests {
         assert!(out.contains("$$a, b$$"), "{out}");
         assert!(out.contains("1.5e-3"), "{out}");
         let out = format_sql("select * from t where a=:id and b=$1 and c = E'it\\'s' -- x\n");
+        let lit = r"'a\'b, from c'";
+        assert!(super::format_sql_as(&format!("select {lit} from t"), true).contains(lit));
         let my = format_sql("select a # note\n+ 1 from t");
         assert!(my.contains("# note\n"), "{my}"); // + 1 stays out of the MySQL comment
         for kept in [":id", "$1", "E'it\\'s'"] {

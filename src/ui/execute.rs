@@ -254,7 +254,9 @@ impl AppView {
         let setting = heads
             .first()
             .is_some_and(|(w, _)| matches!(w.as_str(), "PRAGMA" | "SET" | "RESET" | "DISCARD"));
-        let need_begin = manual && !in_tx && write && !first_ends && !mysql_ddl && !setting;
+        // a script that opens its own transaction gets no BEGIN before it
+        let need_begin =
+            manual && !in_tx && write && !first_ends && !mysql_ddl && !setting && !opens;
         if manual && let Some(i) = self.conn_ix(conn) {
             let c = &mut self.conns[i];
             if first_ends {
@@ -308,8 +310,10 @@ impl AppView {
                         Err(_) => {}
                     }
                 }
+                // (BEGIN; …; COMMIT ended it again)
                 if manual
                     && opens
+                    && !later_ends
                     && r.is_ok()
                     && let Some(i) = v.conn_ix(conn)
                     && !v.conns[i].in_tx

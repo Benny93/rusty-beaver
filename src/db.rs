@@ -1638,8 +1638,13 @@ pub fn dollar_quote_end(sql: &str, i: usize) -> Option<usize> {
 /// A table filter split into its condition and a trailing `ORDER BY …` (outside quotes):
 /// "x = 1 ORDER BY y" -> ("x = 1 ", "ORDER BY y").
 pub fn split_order(filter: &str) -> (&str, &str) {
+    // outside quotes and parentheses: id IN (SELECT … ORDER BY ts LIMIT 5) keeps its own
+    let top = |s: &str| {
+        s.matches('\'').count().is_multiple_of(2)
+            && s.matches('(').count() == s.matches(')').count()
+    };
     match filter.to_ascii_lowercase().rfind("order by") {
-        Some(at) if filter[..at].matches('\'').count().is_multiple_of(2) => filter.split_at(at),
+        Some(at) if top(&filter[..at]) => filter.split_at(at),
         _ => (filter, ""),
     }
 }
@@ -2592,6 +2597,8 @@ mod tests {
             ]
         );
         assert_eq!(split_order("a = 'order by'"), ("a = 'order by'", ""));
+        let sub = "id IN (SELECT id FROM x ORDER BY ts DESC LIMIT 5)";
+        assert_eq!(split_order(sub), (sub, "")); // the subquery's own ORDER BY
         assert_eq!(
             Driver::Sqlite.select_all("t", "ORDER BY b", 5),
             "SELECT * FROM \"t\" ORDER BY b LIMIT 5;"

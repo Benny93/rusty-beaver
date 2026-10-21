@@ -166,7 +166,7 @@ The running app serves MCP (streamable HTTP) on `127.0.0.1` only. Requests whose
 claude mcp add --transport http rusty-beaver http://127.0.0.1:7979/mcp   # or use the bundled .mcp.json
 ```
 
-There are 54 tools. Each one changes the UI the user is looking at and returns structured data.
+There are 55 tools. Each one changes the UI the user is looking at and returns structured data.
 
 | Area | Tools |
 | --- | --- |

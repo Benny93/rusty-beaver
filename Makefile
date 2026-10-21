@@ -10,7 +10,7 @@ MYSQL_IMAGE ?= mysql:8
 UNAME  := $(shell uname -s 2>/dev/null || echo Windows)
 EXE    := $(if $(filter Windows MINGW% MSYS% CYGWIN%,$(UNAME)),.exe,)
 BIN    := target/release/rusty-beaver$(EXE)
-VERSION := $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+VERSION := $(shell sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
 PID    := target/rusty-beaver.pid
 LOG    := target/rusty-beaver.log
 MCP    := python3 scripts/mcp.py
@@ -100,6 +100,7 @@ else
 install: build-release
 	install -Dm755 $(BIN) $(PREFIX)/bin/rusty-beaver$(EXE)
 	install -Dm644 assets/rusty-beaver.desktop $(PREFIX)/share/applications/rusty-beaver.desktop
+	mkdir -p $(PREFIX)/share/icons
 	cp -R assets/hicolor $(PREFIX)/share/icons/
 	@echo "installed to $(PREFIX)"
 uninstall:

@@ -30,10 +30,10 @@ def rpc(method, params=None, notify=False):
         if line.startswith("{"):
             m = json.loads(line)
             if "id" in m:
-                if "error" in m:
-                    sys.exit(f"error: {m['error']}")
+                if "error" in m:  # raised, not exit: smoke.py reports it as that check's failure
+                    raise RuntimeError(f"error: {m['error']}")
                 return m["result"]
-    sys.exit(f"no response: {body[:200]}")
+    raise RuntimeError(f"no response: {body[:200]}")
 
 
 def main():
@@ -68,3 +68,5 @@ if __name__ == "__main__":
         main()
     except urllib.error.URLError as e:
         sys.exit(f"Rusty Beaver is not reachable at {URL} ({e.reason}); start it with `make run`")
+    except RuntimeError as e:
+        sys.exit(str(e))

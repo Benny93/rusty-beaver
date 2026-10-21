@@ -268,7 +268,11 @@ if (typeof document !== 'undefined') (() => {
     if (due) {
       const { cells, bombs } = explode(s.tiles, s.bombs, due);
       s.bombs = s.bombs.filter(b => !bombs.includes(b));
+      // chained bombs share cells: a crate burnt twice would burn its own power-up
+      const seen = new Set();
       for (const [x, y] of cells) {
+        if (seen.has(x + ',' + y)) continue;
+        seen.add(x + ',' + y);
         s.flames.push({ x, y, t: BURN });
         if (s.tiles[y][x] === CRATE) {
           s.tiles[y][x] = FLOOR;
@@ -302,7 +306,10 @@ if (typeof document !== 'undefined') (() => {
       run.score += 50;
       updateHud();
     }
-    if (burning(p.x, p.y) || s.enemies.some(e => e.alive && e.x === p.x && e.y === p.y)) return die();
+    // same tile, or swapped tiles in this step (they walked through each other)
+    const met = e => e.alive && (e.x === p.x && e.y === p.y ||
+      e.x === p.px && e.y === p.py && e.px === p.x && e.py === p.y);
+    if (burning(p.x, p.y) || s.enemies.some(met)) return die();
     if (s.enemies.every(e => !e.alive)) { run.score += 500; return setMode('clear'); }
     updateHud();
   }
@@ -349,7 +356,8 @@ if (typeof document !== 'undefined') (() => {
   const release = d => { held = held.filter(h => h !== d); };
   // Keys belong to the game only while it runs or has focus, so the page scrolls normally
   // otherwise; scrolling the game out of view pauses it (and so hands the keys back).
-  const ours = () => mode === 'play' || root.contains(document.activeElement);
+  // Also on its own end screens, so "Space to try again" works after clicking elsewhere.
+  const ours = () => ['play', 'dead', 'clear', 'over'].includes(mode) || root.contains(document.activeElement);
 
   window.addEventListener('keydown', e => {
     if (!ours()) return;

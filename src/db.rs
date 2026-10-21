@@ -71,11 +71,13 @@ impl Driver {
 
     /// `SELECT * FROM <table> [WHERE <filter>] LIMIT n`, as the table editor runs it.
     pub fn select_all(self, table: &str, filter: &str, limit: usize) -> String {
-        let filter = filter.trim();
-        let filter = if filter.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {filter}")
+        // a filter that is only "ORDER BY y" sorts: no WHERE before it
+        let (cond, order) = split_order(filter.trim());
+        let filter = match (cond.trim(), order.trim()) {
+            ("", "") => String::new(),
+            ("", o) => format!(" {o}"),
+            (c, "") => format!(" WHERE {c}"),
+            (c, o) => format!(" WHERE {c} {o}"),
         };
         format!(
             "SELECT * FROM {}{filter} LIMIT {limit};",
@@ -2312,6 +2314,10 @@ mod tests {
         );
         assert_eq!(split_order("a = 1 order by b"), ("a = 1 ", "order by b"));
         assert_eq!(split_order("a = 'order by'"), ("a = 'order by'", ""));
+        assert_eq!(
+            Driver::Sqlite.select_all("t", "ORDER BY b", 5),
+            "SELECT * FROM \"t\" ORDER BY b LIMIT 5;"
+        );
         let v: std::collections::HashMap<String, String> = [
             ("rank".to_string(), "'Private'".to_string()),
             ("min".into(), "3".into()),

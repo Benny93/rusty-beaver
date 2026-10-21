@@ -441,7 +441,12 @@ pub fn connect(c: &ConnConfig) -> Result<Session, String> {
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let mut s = match c.driver {
         Driver::Sqlite => {
-            Session::Sqlite(rusqlite::Connection::open(&c.database).map_err(|x| e(&x))?)
+            // ~/data/app.db: the shell would expand it, SQLite does not
+            let path = match c.database.strip_prefix("~/") {
+                Some(rest) => dirs::home_dir().unwrap_or_default().join(rest),
+                None => PathBuf::from(&c.database),
+            };
+            Session::Sqlite(rusqlite::Connection::open(&path).map_err(|x| e(&x))?)
         }
         Driver::Postgres => Session::Postgres(
             pg_config(c)

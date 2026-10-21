@@ -233,7 +233,11 @@ impl AppView {
         let name = self
             .tabs
             .get(tab)
-            .map(|t| format!("{}.sql", t.title.replace(['<', '>', ' ', '/'], "")))
+            .map(|t| match t.path.as_ref().and_then(|p| p.file_name()) {
+                // a script from a file keeps its name (not foo.sql.sql)
+                Some(f) => f.to_string_lossy().into_owned(),
+                None => format!("{}.sql", t.title.replace(['<', '>', ' ', '/'], "")),
+            })
             .unwrap_or_default();
         let dir = self
             .tabs

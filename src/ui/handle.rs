@@ -618,8 +618,13 @@ impl AppView {
                             *field = v.to_string();
                         }
                     }
-                    if let Some(p) = a["port"].as_u64() {
-                        c.port = p as u16;
+                    if let Some(p) = a.get("port").filter(|p| !p.is_null()) {
+                        // 70000 wrapped to 4464; "5433" was ignored
+                        c.port = p
+                            .as_u64()
+                            .and_then(|p| u16::try_from(p).ok())
+                            .filter(|&p| p != 0)
+                            .ok_or(format!("port: {p} is not 1-65535"))?;
                     }
                     if let Some(m) = a["auth"].as_str() {
                         c.auth = Auth::parse(m).ok_or(format!(

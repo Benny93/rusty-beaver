@@ -72,7 +72,22 @@ fn append_to(p: &std::path::Path, e: &Entry) {
         .append(true)
         .open(p)
     {
-        let _ = writeln!(f, "{}", serde_json::to_string(e).unwrap());
+        // one write per entry; after a line a crash cut off, a line of its own
+        let torn = (|| {
+            use std::io::{Read as _, Seek as _};
+            let mut r = std::fs::File::open(p).ok()?;
+            r.seek(std::io::SeekFrom::End(-1)).ok()?; // an empty file: no last byte
+            let mut last = [0u8];
+            r.read_exact(&mut last).ok()?;
+            Some(last[0] != b'\n')
+        })()
+        .unwrap_or(false);
+        let line = format!(
+            "{}{}\n",
+            if torn { "\n" } else { "" },
+            serde_json::to_string(e).unwrap()
+        );
+        let _ = f.write_all(line.as_bytes());
     }
     // trimmed on start, and in a long run (an agent) once it gets big
     // ponytail: 500 huge scripts stay over 2 MB and are re-read per append; cap entry size
@@ -122,6 +137,10 @@ mod tests {
         let v = load_from(&p);
         assert_eq!((v.len(), v[0].sql.as_str()), (KEEP, "SELECT 5"));
         assert_eq!(load_from(&p).len(), KEEP); // file was trimmed
+        // a line cut off by a crash costs only itself, not the next entry
+        std::fs::write(&p, r#"{"sql":"x""#).unwrap();
+        append_to(&p, &e(1));
+        assert_eq!(load_from(&p).len(), 1);
         let _ = std::fs::remove_file(&p);
         assert_eq!(age(100, 130), "just now");
         assert_eq!(age(0, 7300), "2 h ago");

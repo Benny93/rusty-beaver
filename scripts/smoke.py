@@ -301,6 +301,13 @@ def main():
             call("chart", {"on": False})
             assert call("record_view", {"on": True, "row": 1})["record"]["name"]
             call("record_view", {"on": False})
+            # a selected row that a search hid: the record the form shows (its last row)
+            call("run_sql", {"connection": DB, "sql": "SELECT 1 AS a UNION ALL SELECT 2 UNION ALL SELECT 3"})
+            call("record_view", {"on": True, "row": 2})
+            call("search_results", {"text": "1"})
+            r = call("record_view", {"on": True})
+            assert (r["row"], r["record"]) == (0, {"a": "1"}), r
+            call("record_view", {"on": False})
             er = call("open_er_diagram", {"connection": DB})
             assert len(er["relations"]) == 2, er["relations"]
             assert call("generate_sql", {"connection": DB, "table": "lodges", "kind": "select"})["sql"].startswith("SELECT")

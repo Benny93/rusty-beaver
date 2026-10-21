@@ -427,7 +427,8 @@ impl AppView {
                             t.cell = Some((row as usize, t.cell.map(|c| c.1).unwrap_or(0)));
                         }
                         let g = t.grid.read(cx).delegate();
-                        let row = t.cell.map(|c| c.0).unwrap_or(0);
+                        // as the form shows it: a row a search hid is the last one there
+                        let row = t.cell.map(|c| c.0).unwrap_or(0).min(rows.saturating_sub(1));
                         let record: serde_json::Map<String, Value> = g
                             .row_id(row)
                             .map(|id| {

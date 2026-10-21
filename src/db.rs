@@ -679,7 +679,11 @@ impl Session {
         // them a serial id would be a plain NOT NULL integer)
         let cols = self.columns(table)?;
         let (schema, name) = table.split_once('.').unwrap_or(("public", table));
-        let extras: std::collections::HashMap<String, String> = self
+        // (the catalog queries are Postgres': SQLite and MySQL get here only for a table their
+        // own lookup did not find, like a temp table)
+        let pg = driver == Driver::Postgres;
+        let extras: std::collections::HashMap<String, String> = if pg {
+            self
             .query(&format!(
                 "SELECT column_name, CASE WHEN is_identity = 'YES' THEN ' GENERATED ' || identity_generation || ' AS IDENTITY' \
                  WHEN is_generated = 'ALWAYS' THEN ' GENERATED ALWAYS AS (' || generation_expression || ') STORED' \
@@ -691,7 +695,10 @@ impl Session {
             .rows
             .into_iter()
             .map(|r| (text(&r[0]).to_string(), text(&r[1]).to_string()))
-            .collect();
+            .collect()
+        } else {
+            Default::default()
+        };
         let mut lines: Vec<String> = cols
             .rows
             .iter()
@@ -705,15 +712,27 @@ impl Session {
                 )
             })
             .collect();
-        // the key's own column order: PRIMARY KEY (b, a) is another index than (a, b)
-        let pk = self.query(&format!(
-            "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE contype = 'p' \
-             AND conrelid = (quote_ident({s}) || '.' || quote_ident({t}))::regclass",
-            s = driver.literal(schema),
-            t = driver.literal(name)
-        ))?;
-        if let Some(def) = pk.rows.first().and_then(|r| r[0].as_deref()) {
-            lines.push(format!("    {def}"));
+        if pg {
+            // the key's own column order: PRIMARY KEY (b, a) is another index than (a, b)
+            let pk = self.query(&format!(
+                "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE contype = 'p' \
+                 AND conrelid = (quote_ident({s}) || '.' || quote_ident({t}))::regclass",
+                s = driver.literal(schema),
+                t = driver.literal(name)
+            ))?;
+            if let Some(def) = pk.rows.first().and_then(|r| r[0].as_deref()) {
+                lines.push(format!("    {def}"));
+            }
+        } else {
+            let pk: Vec<String> = cols
+                .rows
+                .iter()
+                .filter(|c| text(&c[3]) == "PK")
+                .map(|c| driver.quote(text(&c[0])))
+                .collect();
+            if !pk.is_empty() {
+                lines.push(format!("    PRIMARY KEY ({})", pk.join(", ")));
+            }
         }
         Ok(format!(
             "CREATE TABLE {} (\n{}\n);",
@@ -2312,6 +2331,14 @@ mod tests {
             .unwrap();
         let d = s.foreign_keys().unwrap();
         assert_eq!(d.iter().find(|f| f.table == "d").unwrap().ref_table, "t");
+        // a temp table is not in sqlite_master: rebuilt from its columns (not Postgres' catalog)
+        s.query("CREATE TEMP TABLE tmp(id INTEGER PRIMARY KEY, v TEXT)")
+            .unwrap();
+        let d = s.ddl("tmp").unwrap();
+        assert!(
+            d.contains("PRIMARY KEY") && !d.contains("information_schema"),
+            "{d}"
+        );
         // the diagram's table limit counts tables, not the views before them
         s.query("CREATE VIEW a1 AS SELECT 1; CREATE VIEW a2 AS SELECT 1")
             .unwrap();

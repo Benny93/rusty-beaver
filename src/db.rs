@@ -37,6 +37,21 @@ impl Driver {
     }
 
     /// An identifier quoted for this dialect.
+    /// A string as an SQL literal. MySQL also treats backslashes as escapes.
+    /// Servers coerce '42' to numbers and dates.
+    pub fn literal(self, v: &str) -> String {
+        let v = v.replace('\'', "''");
+        match self {
+            Driver::Mysql => format!("'{}'", v.replace('\\', "\\\\")),
+            _ => format!("'{v}'"),
+        }
+    }
+
+    /// `literal`, with None as NULL.
+    pub fn literal_opt(self, v: Option<&str>) -> String {
+        v.map(|v| self.literal(v)).unwrap_or_else(|| "NULL".into())
+    }
+
     pub fn quote(self, ident: &str) -> String {
         match self {
             Driver::Mysql => format!("`{}`", ident.replace('`', "``")),
@@ -68,12 +83,13 @@ impl Driver {
         )
     }
 
-    /// Statement returning a table's DDL in its first row, last column (where the server has one).
+    /// Statement returning a table's DDL in its first row, second or only column (where the
+    /// server has one).
     fn ddl_sql(self, table: &str) -> Option<String> {
         match self {
             Driver::Sqlite => Some(format!(
                 "SELECT sql FROM sqlite_master WHERE name = {}",
-                literal(table)
+                self.literal(table)
             )),
             Driver::Mysql => Some(format!("SHOW CREATE TABLE {}", self.quote(table))),
             Driver::Postgres => None,
@@ -143,15 +159,6 @@ impl Driver {
     }
 }
 
-/// A string as an SQL literal; None is NULL. Servers coerce '42' to numbers and dates.
-pub fn literal_opt(v: Option<&str>) -> String {
-    v.map(literal).unwrap_or_else(|| "NULL".into())
-}
-
-pub fn literal(v: &str) -> String {
-    format!("'{}'", v.replace('\'', "''"))
-}
-
 /// Pending grid edits of a table editor, by original row index.
 #[derive(Default, Clone, Debug)]
 pub struct Changes {
@@ -199,7 +206,7 @@ impl Changes {
             key.iter()
                 .map(|&c| match rows[row][c].as_str() {
                     "NULL" => format!("{} IS NULL", q(c)),
-                    v => format!("{} = {}", q(c), literal(v)),
+                    v => format!("{} = {}", q(c), driver.literal(v)),
                 })
                 .collect::<Vec<_>>()
                 .join(" AND ")
@@ -241,7 +248,7 @@ impl Changes {
                     .join(", ");
                 let vals = cells
                     .iter()
-                    .map(|(_, v)| literal_opt(v.as_deref()))
+                    .map(|(_, v)| driver.literal_opt(v.as_deref()))
                     .collect::<Vec<_>>()
                     .join(", ");
                 out.push(format!("INSERT INTO {t} ({cols}) VALUES ({vals});"));
@@ -250,7 +257,7 @@ impl Changes {
         for (row, cells) in by_row {
             let set = cells
                 .iter()
-                .map(|(c, v)| format!("{} = {}", q(*c), literal_opt(v.as_deref())))
+                .map(|(c, v)| format!("{} = {}", q(*c), driver.literal_opt(v.as_deref())))
                 .collect::<Vec<_>>()
                 .join(", ");
             out.push(format!("UPDATE {t} SET {set} WHERE {};", where_key(row)));
@@ -423,7 +430,7 @@ pub enum Session {
 pub fn connect(c: &ConnConfig) -> Result<Session, String> {
     let c = &crate::vault::resolve(c, &crate::vault::open_browser)?;
     let e = |e: &dyn std::fmt::Display| e.to_string();
-    Ok(match c.driver {
+    let mut s = match c.driver {
         Driver::Sqlite => {
             Session::Sqlite(rusqlite::Connection::open(&c.database).map_err(|x| e(&x))?)
         }
@@ -466,7 +473,16 @@ pub fn connect(c: &ConnConfig) -> Result<Session, String> {
             };
             Session::Mysql(conn.map_err(|x| e(&x))?)
         }
-    })
+    };
+    // The server enforces read-only too: `is_write` is a keyword scan that quoting can fool.
+    if c.read_only {
+        s.query(match c.driver {
+            Driver::Sqlite => "PRAGMA query_only = ON",
+            Driver::Postgres => "SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY",
+            Driver::Mysql => "SET SESSION TRANSACTION READ ONLY",
+        })?;
+    }
+    Ok(s)
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]
@@ -552,7 +568,8 @@ impl Session {
         let driver = self.driver();
         if let Some(sql) = driver.ddl_sql(table) {
             let r = self.query(&sql)?;
-            if let Some(v) = r.rows.first().and_then(|row| row.last()) {
+            // MySQL: (name, CREATE ...) for tables, plus charset columns for views
+            if let Some(v) = r.rows.first().and_then(|row| row.get(1).or(row.last())) {
                 return Ok(format!("{v};"));
             }
         }
@@ -1117,6 +1134,9 @@ pub fn save_connections(list: &[ConnConfig]) -> Result<Vec<String>, String> {
                     f.password.clear();
                     f.keychain = true;
                 }
+            } else if c.keychain && c.auth == Auth::Password && c.password.is_empty() {
+                // the keychain could not be read this run: the password is still there
+                f.keychain = true;
             } else if secrets::enabled() && keychain_has(&c.id, None) {
                 // no longer a stored password (now empty or a Vault reference)
                 secrets::delete(&c.id);
@@ -1252,12 +1272,14 @@ fn param_spans(sql: &str) -> Vec<(std::ops::Range<usize>, String)> {
 }
 
 /// Does the SQL change data or schema? Looks for INSERT, UPDATE, DELETE, MERGE, DROP, ALTER,
-/// TRUNCATE, CREATE, GRANT, REVOKE, RENAME as words outside strings and comments.
+/// TRUNCATE, CREATE, GRANT, REVOKE, RENAME, REPLACE, COPY, CALL, ... as words outside strings
+/// and comments.
 /// ponytail: keyword scan errs on the side of asking (a column named "update" asks too)
 pub fn is_write(sql: &str) -> bool {
     const WRITES: &[&str] = &[
         "INSERT", "UPDATE", "DELETE", "MERGE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT",
-        "REVOKE", "RENAME",
+        "REVOKE", "RENAME", "REPLACE", "COPY", "CALL", "DO", "INTO", "LOAD", "VACUUM", "REINDEX",
+        "CLUSTER", "COMMENT", "LOCK", "IMPORT",
     ];
     let b = sql.as_bytes();
     let mut i = 0;
@@ -1285,9 +1307,11 @@ pub fn is_write(sql: &str) -> bool {
                 while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
                     i += 1;
                 }
-                if WRITES
-                    .iter()
-                    .any(|w| w.eq_ignore_ascii_case(&sql[start..i]))
+                let word = &sql[start..i];
+                // replace(s, a, b) is a string function
+                let call = sql[i..].trim_start().starts_with('(');
+                if WRITES.iter().any(|w| w.eq_ignore_ascii_case(word))
+                    && !(call && word.eq_ignore_ascii_case("REPLACE"))
                 {
                     return true;
                 }
@@ -1335,7 +1359,7 @@ pub fn row_counts_sql(driver: Driver, tables: &[String]) -> String {
         .map(|t| {
             format!(
                 "SELECT {} AS table_name, count(*) AS row_count FROM {}",
-                literal(t),
+                driver.literal(t),
                 driver.table_ref(t)
             )
         })
@@ -1525,7 +1549,11 @@ pub fn export(r: &QueryResult, ext: &str, driver: Driver, table: &str) -> String
                         "INSERT INTO {} ({cols}) VALUES ({});\n",
                         driver.table_ref(table),
                         row.iter()
-                            .map(|v| if nul(v) { "NULL".into() } else { literal(v) })
+                            .map(|v| if nul(v) {
+                                "NULL".into()
+                            } else {
+                                driver.literal(v)
+                            })
                             .collect::<Vec<_>>()
                             .join(", ")
                     )
@@ -1596,7 +1624,7 @@ pub fn csv_inserts(driver: Driver, table: &str, text: &str) -> Result<Vec<String
                     if v.is_empty() || v == "NULL" {
                         "NULL".into()
                     } else {
-                        literal(v)
+                        driver.literal(v)
                     }
                 })
                 .collect::<Vec<_>>()
@@ -1690,6 +1718,13 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(to_csv(&r), "a,b\r\n\"x,y\",\"q\"\"\"\r\n");
+    }
+
+    #[test]
+    fn literals_escape_per_dialect() {
+        assert_eq!(Driver::Sqlite.literal(r"it's C:\t"), r"'it''s C:\t'");
+        assert_eq!(Driver::Postgres.literal(r"a\"), r"'a\'");
+        assert_eq!(Driver::Mysql.literal(r"it's C:\t\"), r"'it''s C:\\t\\'");
     }
 
     #[test]
@@ -1942,6 +1977,18 @@ mod tests {
     }
 
     #[test]
+    fn read_only_is_enforced_by_the_server() {
+        let mut s = connect(&ConnConfig {
+            database: ":memory:".into(),
+            read_only: true,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(s.query("SELECT 1").is_ok());
+        assert!(s.query("CREATE TABLE t(a)").is_err());
+    }
+
+    #[test]
     fn write_detection() {
         assert!(!is_write(
             "SELECT 'drop table x', replace(name, 'a', 'b') FROM t -- delete\n/* update */"
@@ -1949,6 +1996,8 @@ mod tests {
         assert!(is_write("with x as (select 1) delete from t"));
         assert!(is_write("SELECT 1; Update t SET a = 1"));
         assert!(!is_write("EXPLAIN SELECT * FROM updates_log"));
+        assert!(is_write("REPLACE INTO t VALUES (1)"));
+        assert!(is_write("SELECT * INTO newt FROM t"));
     }
 
     #[test]

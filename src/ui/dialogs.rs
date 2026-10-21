@@ -205,19 +205,22 @@ impl AppView {
         let old = std::mem::replace(&mut self.conns[ix].cfg, cfg.clone());
         let renamed_only = ConnConfig {
             name: cfg.name.clone(),
+            keychain: cfg.keychain, // the dialog does not carry it
             ..old.clone()
         };
         if serde_json::to_string(&renamed_only).ok() != serde_json::to_string(&cfg).ok() {
             self.disconnect(id, cx);
         }
-        for t in self
-            .tabs
-            .iter_mut()
-            .filter(|t| t.conn == id && t.kind == TabKind::Sql)
-        {
-            t.title = t
-                .title
-                .replace(&format!("<{}>", old.name), &format!("<{}>", cfg.name));
+        for t in self.tabs.iter_mut().filter(|t| t.conn == id) {
+            match t.kind {
+                TabKind::Sql => {
+                    t.title = t
+                        .title
+                        .replace(&format!("<{}>", old.name), &format!("<{}>", cfg.name))
+                }
+                TabKind::Diagram => t.title = format!("ER: {}", cfg.name),
+                TabKind::Table(_) => {}
+            }
         }
         self.save();
         self.status = format!("Updated connection {}", cfg.name);

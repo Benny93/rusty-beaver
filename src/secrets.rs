@@ -49,8 +49,16 @@ pub fn store(id: &str, password: &str) -> Result<(), String> {
         if m.get(id).map(String::as_str) == Some(password) {
             return Ok(());
         }
-        m.insert(id.into(), password.into());
-        write(m)
+        let old = m.insert(id.into(), password.into());
+        let r = write(m);
+        if r.is_err() {
+            // not stored: the cache must not say it is
+            match old {
+                Some(p) => m.insert(id.into(), p),
+                None => m.remove(id),
+            };
+        }
+        r
     })
 }
 

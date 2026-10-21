@@ -60,8 +60,8 @@ impl AppView {
                 let cond = match (op == GridOp::FilterBy, v == "NULL") {
                     (true, true) => format!("{name} IS NULL"),
                     (false, true) => format!("{name} IS NOT NULL"),
-                    (true, false) => format!("{name} = {}", db::literal(&v)),
-                    (false, false) => format!("{name} <> {}", db::literal(&v)),
+                    (true, false) => format!("{name} = {}", driver.literal(&v)),
+                    (false, false) => format!("{name} <> {}", driver.literal(&v)),
                 };
                 let tab = &mut self.tabs[ix];
                 let old = tab.filter.read(cx).value().trim().to_string();
@@ -88,7 +88,7 @@ impl AppView {
                         if v.parse::<f64>().is_ok() {
                             v
                         } else {
-                            db::literal(&v)
+                            driver.literal(&v)
                         }
                     })
                     .collect();
@@ -124,7 +124,7 @@ impl AppView {
                             .map(|v| if v == "NULL" {
                                 v.clone()
                             } else {
-                                db::literal(v)
+                                driver.literal(v)
                             })
                             .collect::<Vec<_>>()
                             .join(", ")
@@ -221,7 +221,7 @@ impl AppView {
                 let conn = t.conn;
                 self.open_table(conn, ref_table.clone(), window, cx, done);
                 let filter = ref_col
-                    .map(|c| format!("{} = {}", driver.quote(&c), db::literal(&value)))
+                    .map(|c| format!("{} = {}", driver.quote(&c), driver.literal(&value)))
                     .unwrap_or_default();
                 if let Some(nt) = self.tabs.get(self.active) {
                     nt.filter

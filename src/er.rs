@@ -149,6 +149,8 @@ impl Diagram {
                     .columns
                     .iter()
                     .position(|c| c.0 == col)
+                    // SQLite keeps REFERENCES t(ID) as written
+                    .or_else(|| t.columns.iter().position(|c| c.0.eq_ignore_ascii_case(col)))
                 {
                     Some(i) => top + HEADER_H + ROW_H * i as f32 + ROW_H / 2.,
                     None => top + HEADER_H / 2.,
@@ -209,6 +211,18 @@ mod tests {
             ref_table: ref_table.into(),
             ref_column: String::new(),
         }
+    }
+
+    #[test]
+    fn a_link_ends_at_its_column_whatever_its_case() {
+        // SQLite keeps REFERENCES t(ID) as written: still t's id row, not its header
+        let mut key = fk("c", "t_id", "t");
+        key.ref_column = "ID".into();
+        let d = Diagram::new(vec![t("t", &["id"]), t("c", &["id", "t_id"])], vec![key]);
+        assert_eq!(
+            d.link_points()[0].1.1,
+            d.pos["t"].1 + HEADER_H + ROW_H * 0.5
+        );
     }
 
     #[test]

@@ -192,6 +192,12 @@ def main():
             c = call("delete_row", {"row": rows - 1})
             assert (c["pending_changes"], c["added_rows"], c["deleted_rows"]) == (0, 0, []), c
             call("revert_changes")
+            # a duplicated row leaves out generated columns (they cannot be inserted)
+            call("run_sql", {"connection": DB, "sql": "CREATE TABLE gen(id INTEGER PRIMARY KEY, a INT, b INT GENERATED ALWAYS AS (a * 2)); INSERT INTO gen(a) VALUES (3)"})
+            call("open_table", {"connection": DB, "table": "gen"})
+            call("duplicate_row", {"row": 0})
+            assert call("save_changes")["saved"]
+            assert q("SELECT a, b FROM gen ORDER BY id") == [(3, 6), (3, 6)]
             # table tabs have no search box: a search there could not be cleared by the user
             call("open_table", {"connection": DB, "table": "lodges"})
             assert "set_filter" in call("search_results", {"text": "x"}, ok=False)

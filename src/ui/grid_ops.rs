@@ -270,10 +270,22 @@ impl AppView {
                 let id = g.row_id(row).unwrap_or_default();
                 let values: Vec<Option<String>> =
                     (0..g.r.columns.len()).map(|c| g.cell(id, c)).collect();
+                let columns = g.r.columns.clone();
                 let key: Vec<usize> = t
                     .key
                     .iter()
                     .filter_map(|k| g.r.columns.iter().position(|c| c == k))
+                    .collect();
+                // columns the table does not list are generated (SQLite's table_info hides them):
+                // no value to insert either
+                let listed: Vec<String> = t
+                    .columns
+                    .read(cx)
+                    .delegate()
+                    .r
+                    .rows
+                    .iter()
+                    .map(|c| db::text(&c[0]).to_string())
                     .collect();
                 let new = grid.update(cx, |g, cx| {
                     let r = g.delegate_mut().add_row();
@@ -289,7 +301,10 @@ impl AppView {
                     .unwrap_or_default();
                 for (c, v) in values.into_iter().enumerate() {
                     // a blob's "[BLOB n bytes]" is no value to insert
-                    if let Some(v) = v.filter(|v| !key.contains(&c) && !db::is_blob_text(v)) {
+                    let generated = !listed.is_empty() && !listed.contains(&columns[c]);
+                    if let Some(v) =
+                        v.filter(|v| !key.contains(&c) && !generated && !db::is_blob_text(v))
+                    {
                         self.set_cell(ix, new_id, c, Some(v), cx);
                     }
                 }

@@ -716,10 +716,36 @@ impl AppView {
     /// The active grid as shown, in the format of `ext` (see `db::export`).
     pub(super) fn export_text(&self, ext: &str, cx: &App) -> Result<(String, usize), String> {
         let t = self.tabs.get(self.active).ok_or("no tab open")?;
-        let r = &t.grid.read(cx).delegate().shown();
+        let mut r = t.grid.read(cx).delegate().shown();
         if r.columns.is_empty() {
             return Err("no result to export".into());
         }
+        // INSERTs of a table take no value for its generated columns: running them would fail
+        if ext.eq_ignore_ascii_case("sql") && matches!(t.kind, TabKind::Table(_)) {
+            let cols = &t.columns.read(cx).delegate().r.rows;
+            let keep: Vec<bool> = r
+                .columns
+                .iter()
+                .map(|c| {
+                    !cols
+                        .iter()
+                        .any(|k| db::text(&k[0]) == c && db::text(&k[5]) == db::GENERATED)
+                })
+                .collect();
+            let pick = |row: Vec<Option<String>>| {
+                row.into_iter()
+                    .zip(&keep)
+                    .filter(|(_, k)| **k)
+                    .map(|(v, _)| v)
+                    .collect::<Vec<_>>()
+            };
+            r.columns = pick(r.columns.into_iter().map(Some).collect())
+                .into_iter()
+                .flatten()
+                .collect();
+            r.rows = r.rows.into_iter().map(pick).collect();
+        }
+        let r = &r;
         let driver = self
             .conn_ix(t.conn)
             .map(|i| self.conns[i].cfg.driver)

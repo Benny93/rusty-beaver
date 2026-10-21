@@ -556,7 +556,7 @@ impl AppView {
         self.status = match self.export_text(ext, cx) {
             Ok((text, rows)) => {
                 cx.write_to_clipboard(ClipboardItem::new_string(text));
-                format!("Copied {} as {label}", plural(rows, "row"))
+                format!("Copied {} as {label} to the clipboard", plural(rows, "row"))
             }
             Err(e) => e,
         };
@@ -602,28 +602,36 @@ pub(super) const EXPORT_FORMATS: [(&str, &str); 6] = [
     ("txt", "Plain-text table"),
 ];
 
-/// "Copy all as" and "Save to file" entries for a menu.
+/// "Save to file" and "Copy to clipboard" entries for a menu; with both, each group gets a heading.
 pub(super) fn export_menu(
     menu: PopupMenu,
     view: &WeakEntity<AppView>,
     copy: bool,
     save: bool,
 ) -> PopupMenu {
+    let both = copy && save;
     let mut menu = menu;
-    if copy {
-        for (ext, label) in EXPORT_FORMATS {
-            menu = menu.item(menu_item(view, label, move |v, _, cx| v.copy_all(ext, cx)));
-        }
-    }
-    if copy && save {
-        menu = menu.separator();
-    }
     if save {
+        if both {
+            menu = menu.label("Save to file");
+        }
         for (ext, label) in EXPORT_FORMATS {
             menu = menu.item(menu_item(
                 view,
                 &format!("Save as {label}…"),
                 move |v, w, cx| v.export_to_file(ext, w, cx),
+            ));
+        }
+    }
+    if both {
+        menu = menu.separator().label("Copy to clipboard");
+    }
+    if copy {
+        for (ext, label) in EXPORT_FORMATS {
+            menu = menu.item(menu_item(
+                view,
+                &format!("Copy as {label}"),
+                move |v, _, cx| v.copy_all(ext, cx),
             ));
         }
     }

@@ -132,7 +132,15 @@ impl AppView {
                 .child(div().text_sm().child("Double-click a table · Cmd/Ctrl+T new SQL editor · Cmd/Ctrl+Enter run statement"))
                 .into_any_element();
         }
+        // Bring a newly opened or selected tab into view (once, so the user can scroll away).
+        if self.revealed_tab.get() != Some(self.active) {
+            self.tab_scroll.scroll_to_item(self.active);
+            self.revealed_tab.set(Some(self.active));
+        }
         let tabbar = TabBar::new("tabs")
+            .track_scroll(&self.tab_scroll)
+            .menu(true)
+            .max_width(px(240.))
             .selected_index(self.active)
             .children(self.tabs.iter().enumerate().map(|(i, tab)| {
                 Tab::new()

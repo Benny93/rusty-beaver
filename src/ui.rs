@@ -471,6 +471,9 @@ pub struct AppView {
     follow_system: bool,
     /// The keyboard shortcut overlay is open.
     shortcuts: bool,
+    /// Horizontal scroll of the tab bar, and the tab last scrolled into view.
+    tab_scroll: ScrollHandle,
+    revealed_tab: std::cell::Cell<Option<usize>>,
     /// The copy button that was just used, and when (it shows a tick for a moment).
     copied: Option<(&'static str, Instant)>,
     /// A save of the open scripts is scheduled.
@@ -562,6 +565,8 @@ impl AppView {
             history: history::load(),
             session_dirty: false,
             shortcuts: false,
+            tab_scroll: ScrollHandle::new(),
+            revealed_tab: Default::default(),
             copied: None,
             params: None,
         }
@@ -622,7 +627,8 @@ impl AppView {
             .unwrap_or_default();
         let n = self.tabs.iter().filter(|t| t.kind == TabKind::Sql).count() + 1;
         let title = match &kind {
-            TabKind::Sql => format!("<{conn_name}> Script-{n}"),
+            // Script name first: long titles are cut off in the tab bar.
+            TabKind::Sql => format!("Script-{n} <{conn_name}>"),
             TabKind::Diagram => format!("ER: {conn_name}"),
             TabKind::Table(t) => t.clone(),
         };

@@ -257,6 +257,7 @@ fn lex(sql: &str, mysql: bool) -> Vec<Tok<'_>> {
                         && next.is_some_and(|c| c.is_ascii_alphabetic() || *c == b'_')
                         || b[i] == b'$' && next.is_some_and(u8::is_ascii_digit)
                         || b[i] == b'-' && next == Some(&b'-')
+                        || b[i] == b'#' && mysql
                         || b[i] == b'/' && next == Some(&b'*')
                         || b[i] == b'.' && next.is_some_and(u8::is_ascii_digit)
                         || b[i] == b'$' && crate::db::dollar_quote_end(sql, i).is_some()
@@ -473,6 +474,9 @@ mod tests {
         for lit in [lit, r"N'a\'b, from c'"] {
             assert!(super::format_sql_as(&format!("select {lit} from t"), true).contains(lit));
         }
+        // MySQL: a # comment right after an operator still ends at its line
+        let glued = super::format_sql_as("select * from t where a=#note\n1", true);
+        assert!(glued.contains("#note\n"), "{glued}");
         let my = format_sql("select a # note\n+ 1 from t");
         assert!(my.contains("# note\n"), "{my}"); // + 1 stays out of the MySQL comment
         for kept in [":id", "$1", "E'it\\'s'"] {

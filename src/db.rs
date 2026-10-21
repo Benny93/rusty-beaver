@@ -1459,6 +1459,65 @@ fn writes(sql: &str, mysql: bool) -> bool {
     false
 }
 
+/// The first two words of each statement, upper case, outside strings and comments: what a
+/// script's statements are (`CREATE TEMPORARY`, `LOCK TABLES`, `COMMIT`).
+pub fn statement_heads(sql: &str, mysql: bool) -> Vec<(String, String)> {
+    let b = sql.as_bytes();
+    let (mut out, mut cur) = (vec![], Vec::<String>::new());
+    let mut flush = |cur: &mut Vec<String>| {
+        if !cur.is_empty() {
+            cur.resize(2, String::new());
+            out.push((cur[0].clone(), cur[1].clone()));
+            cur.clear();
+        }
+    };
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\'' | b'"' | b'`' => {
+                i = quote_end(b, i, mysql);
+                if cur.len() == 1 {
+                    cur.push(String::new()); // CREATE "x": no second keyword
+                }
+            }
+            b'-' | b'#' if b[i] == b'#' && mysql || b[i] == b'-' && b.get(i + 1) == Some(&b'-') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    i += 1;
+                }
+                i += 1;
+            }
+            b'$' => {
+                if let Some(end) = dollar_quote_end(sql, i) {
+                    i = end;
+                    continue;
+                }
+            }
+            b';' => flush(&mut cur),
+            c if c.is_ascii_alphabetic() => {
+                let start = i;
+                while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
+                    i += 1;
+                }
+                if cur.len() < 2 {
+                    cur.push(sql[start..i].to_ascii_uppercase());
+                }
+                continue;
+            }
+            c if !c.is_ascii_whitespace() && cur.len() == 1 => cur.push(String::new()),
+            _ => {}
+        }
+        i += 1;
+    }
+    flush(&mut cur);
+    out
+}
+
 /// Distinct parameter names in order of appearance.
 pub fn params(sql: &str) -> Vec<String> {
     let mut v: Vec<String> = vec![];
@@ -2313,6 +2372,15 @@ mod tests {
             ["id"]
         );
         assert_eq!(split_order("a = 1 order by b"), ("a = 1 ", "order by b"));
+        let h = |sql| statement_heads(sql, true);
+        assert_eq!(
+            h("-- note\nINSERT INTO t VALUES (';'); create temporary table x(a); COMMIT"),
+            [
+                ("INSERT".to_string(), "INTO".to_string()),
+                ("CREATE".into(), "TEMPORARY".into()),
+                ("COMMIT".into(), String::new())
+            ]
+        );
         assert_eq!(split_order("a = 'order by'"), ("a = 'order by'", ""));
         assert_eq!(
             Driver::Sqlite.select_all("t", "ORDER BY b", 5),

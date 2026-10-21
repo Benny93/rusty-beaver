@@ -213,23 +213,24 @@ impl AppView {
             .conn_ix(conn)
             .is_some_and(|i| self.conns[i].cfg.manual_commit);
         let in_tx = self.conn_ix(conn).is_some_and(|i| self.conns[i].in_tx);
-        let head = sql.trim_start().to_ascii_uppercase();
-        let starts = |words: &[&str]| words.iter().any(|k| head.starts_with(k));
+        let mysql = self.mysql_tab(tab);
+        // first two words of each statement, past comments
+        let heads = db::statement_heads(&sql, mysql);
+        let (w1, _) = heads.first().cloned().unwrap_or_default();
         // MySQL commits the open transaction when it runs DDL (temporary tables aside), also
         // when the DDL then fails; only one that does not parse leaves it open. Settled once
-        // the statement ran.
-        // ponytail: the first statement only; DDL later in a script goes unnoticed
-        let mut words = head.split_whitespace();
-        let (w1, w2) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
-        let mysql_ddl = self
-            .conn_ix(conn)
-            .is_some_and(|i| self.conns[i].cfg.driver == Driver::Mysql)
-            && (matches!(
-                w1,
+        // the statements ran.
+        let ddl = |(w1, w2): &(String, String)| {
+            (matches!(
+                w1.as_str(),
                 "CREATE" | "ALTER" | "DROP" | "TRUNCATE" | "RENAME" | "GRANT" | "REVOKE"
             ) || w1 == "LOCK" && w2 == "TABLES")
-            && w2 != "TEMPORARY";
-        let ends_tx = starts(&["COMMIT", "ROLLBACK", "END"]);
+                && w2 != "TEMPORARY"
+        };
+        let mysql_ddl = mysql && heads.first().is_some_and(ddl);
+        let script_ddl = mysql && heads.iter().skip(1).any(ddl);
+        let one_statement = heads.len() <= 1;
+        let ends_tx = matches!(w1.as_str(), "COMMIT" | "ROLLBACK" | "END");
         // Smart commit: only a change opens the transaction; reads run inside an open one.
         let write = db::is_write(&sql);
         let need_begin = manual && !in_tx && write && !ends_tx && !mysql_ddl;
@@ -254,12 +255,25 @@ impl AppView {
             cx,
             Box::new(move |v, r, window, cx| {
                 if manual
-                    && mysql_ddl
-                    && r.as_ref().err().is_none_or(|e| !e.contains("ERROR 1064"))
+                    && (mysql_ddl || script_ddl)
                     && let Some(i) = v.conn_ix(conn)
                 {
-                    (v.conns[i].in_tx, v.conns[i].tx_statements) = (false, 0);
+                    match &r {
+                        // DDL ran: MySQL committed (and later writes autocommitted)
+                        Ok(_) => (v.conns[i].in_tx, v.conns[i].tx_statements) = (false, 0),
+                        Err(e) if one_statement && !e.contains("ERROR 1064") => {
+                            (v.conns[i].in_tx, v.conns[i].tx_statements) = (false, 0)
+                        }
+                        Err(_) => {}
+                    }
                 }
+                // which statement failed is unknown: say so rather than guess
+                let r = match r {
+                    Err(e) if manual && (mysql_ddl || script_ddl) && !one_statement => Err(format!(
+                        "{e}\n(the script has DDL: MySQL may have committed the open transaction; Commit or Roll back to be sure)"
+                    )),
+                    r => r,
+                };
                 // The last result is shown; a script's others are one click away.
                 let r = r.map(|mut all| {
                     let last = all.pop().unwrap_or_default();

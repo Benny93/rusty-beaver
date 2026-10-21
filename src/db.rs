@@ -127,7 +127,7 @@ impl Driver {
     fn tables_sql(self) -> &'static str {
         match self {
             Driver::Sqlite => {
-                "SELECT name, upper(type) FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name"
+                "SELECT name, upper(type) FROM sqlite_master WHERE type IN ('table','view') AND substr(name, 1, 7) <> 'sqlite_' ORDER BY name"
             }
             Driver::Postgres => {
                 // materialized views are not in information_schema (pg_class, not pg_matviews:
@@ -2456,6 +2456,17 @@ mod tests {
         assert_eq!(texts(&fk.rows)[1][3..5], ["FK", "t.id"]);
         assert_eq!(texts(&fk.rows)[2][3..5], ["FK", "t.id"]); // bare REFERENCES t: its primary key
         assert_eq!(s.foreign_keys().unwrap().len(), 2);
+        // only SQLite's own sqlite_ tables are hidden, not sqlite3_cache or SQLiteLog
+        s.query("CREATE TABLE sqlite3_cache(a); CREATE TABLE SQLiteLog(a)")
+            .unwrap();
+        let names: Vec<String> = s.tables().unwrap().into_iter().map(|t| t.0).collect();
+        assert!(
+            names.contains(&"sqlite3_cache".to_string())
+                && names.contains(&"SQLiteLog".to_string()),
+            "{names:?}"
+        );
+        s.query("DROP TABLE sqlite3_cache; DROP TABLE SQLiteLog")
+            .unwrap();
         // C is c in SQLite: its references too
         assert_eq!(
             texts(&s.columns("C").unwrap().rows)[1][3..5],

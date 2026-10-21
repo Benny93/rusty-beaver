@@ -139,7 +139,9 @@ impl Driver {
                 WHERE c.contype = 'f' AND cn.nspname NOT IN ('pg_catalog','information_schema') ORDER BY 1"
             }
             Driver::Mysql => {
-                "SELECT table_name, column_name, referenced_table_name, referenced_column_name FROM information_schema.key_column_usage \
+                // a table of another database by its full name: not a same-named one here
+                "SELECT table_name, column_name, IF(referenced_table_schema = DATABASE(), referenced_table_name, \
+                CONCAT(referenced_table_schema, '.', referenced_table_name)), referenced_column_name FROM information_schema.key_column_usage \
                 WHERE table_schema = DATABASE() AND referenced_table_name IS NOT NULL ORDER BY 1"
             }
         }

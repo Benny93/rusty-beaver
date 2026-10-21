@@ -382,6 +382,16 @@ pub fn open_browser(url: &str) {
     }
 }
 
+/// A secret's field as text: JSON-written secrets can hold numbers and booleans too.
+fn scalar(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => Some(n.to_string()),
+        Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
 /// The connection with its Vault credentials filled in: the password (vault_kv), or user name
 /// and password (vault_dynamic). Password connections come back unchanged.
 pub fn resolve(c: &ConnConfig, open: &dyn Fn(&str)) -> Result<ConnConfig, String> {
@@ -421,16 +431,15 @@ pub fn resolve(c: &ConnConfig, open: &dyn Fn(&str)) -> Result<ConnConfig, String
                 f => f,
             };
             // KV v2 nests the secret in data.data, KV v1 has it in data.
-            let value = data["data"][f]
-                .as_str()
-                .or_else(|| data[f].as_str())
+            let value = scalar(&data["data"][f])
+                .or_else(|| scalar(&data[f]))
                 .ok_or_else(|| format!("Vault secret {path} has no field {f:?}"))?;
-            out.password = value.to_string();
+            out.password = value;
         }
-        _ => match (data["username"].as_str(), data["password"].as_str()) {
+        _ => match (scalar(&data["username"]), scalar(&data["password"])) {
             (Some(u), Some(p)) => {
-                out.user = u.to_string();
-                out.password = p.to_string();
+                out.user = u;
+                out.password = p;
             }
             _ => {
                 return Err(format!(
@@ -566,6 +575,12 @@ mod tests {
                     (403, r#"{"errors":["permission denied"]}"#.to_string(), None)
                 } else if target.starts_with("/v1/auth/token/lookup-self") {
                     (200, "{}".to_string(), None)
+                } else if target.starts_with("/v1/kv/data/pin") {
+                    (
+                        200,
+                        r#"{"data":{"data":{"password":123456}}}"#.to_string(),
+                        None,
+                    )
                 } else if target.starts_with("/v1/kv/data/app") {
                     (
                         200,
@@ -635,6 +650,13 @@ mod tests {
             ..Default::default()
         };
         assert!(resolve(&c, &browser).unwrap_err().contains("no field"));
+        // a secret written as JSON can hold a number
+        let pin = ConnConfig {
+            vault_path: "kv/data/pin".into(),
+            vault_field: String::new(),
+            ..c.clone()
+        };
+        assert_eq!(resolve(&pin, &browser).unwrap().password, "123456");
 
         let plain = ConnConfig {
             password: "plain".into(),

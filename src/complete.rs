@@ -276,7 +276,9 @@ pub fn suggest(text: &str, offset: usize, catalog: &Catalog) -> (usize, Vec<Sugg
                 // a catalog of bare names (MySQL's db.t, SQLite's main.t): the table itself
                 let known = catalog.columns.contains_key(&full)
                     || catalog.tables.iter().any(|t| t.eq_ignore_ascii_case(&full));
-                if known { full } else { name }
+                // only a catalog of bare names (no schema.table at all) falls back
+                let bare = !catalog.tables.iter().any(|t| t.contains('.'));
+                if known || !bare { full } else { name }
             }
             _ => name,
         }
@@ -728,10 +730,30 @@ mod tests {
         let (_, s) = suggest("SELECT dams.h FROM public.dams", 13, &c2);
         assert_eq!(s[0].label, "height"); // public's dams, though audit.dams loaded last
         // db.table. on MySQL/SQLite, whose catalog has bare names: that table
-        let (_, s) = suggest("SELECT main.lodges. FROM lodges", 19, &c2);
+        let (_, s) = suggest("SELECT main.lodges. FROM lodges", 19, &{
+            let mut b = Catalog {
+                tables: vec!["lodges".into()],
+                ..Default::default()
+            };
+            b.set_columns(
+                "lodges",
+                vec![
+                    ("name".into(), "TEXT".into()),
+                    ("river".into(), "TEXT".into()),
+                ],
+            );
+            b
+        });
         assert_eq!(
             s.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(),
             ["name", "river"]
+        );
+        // …but on Postgres other.dams. is no table of public
+        let (_, s) = suggest("SELECT other.dams.", 18, &c2);
+        assert!(
+            s.is_empty(),
+            "{:?}",
+            s.iter().map(|x| &x.label).collect::<Vec<_>>()
         );
         // schema.table. names its schema's table
         for text in [

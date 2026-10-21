@@ -112,14 +112,26 @@ fn call(
     query: &[(&str, &str)],
     body: Option<Value>,
 ) -> Result<(u16, Value), String> {
-    // a secret named "my app" or "a#b": its characters, not URL syntax
+    // a secret named "my app" or "a#b": its characters, not URL syntax (only what a URL
+    // cannot hold is encoded)
     let path: String = path
         .trim_start_matches('/')
         .bytes()
         .map(|c| match c {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' | b'/' => {
-                (c as char).to_string()
-            }
+            // (? & = stay: kv/data/app?version=3 asks for a version; % too: a path typed
+            // already encoded)
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'.'
+            | b'_'
+            | b'~'
+            | b'/'
+            | b'?'
+            | b'&'
+            | b'='
+            | b'%' => (c as char).to_string(),
             c => format!("%{c:02X}"),
         })
         .collect();
@@ -656,6 +668,12 @@ mod tests {
                     (403, r#"{"errors":["permission denied"]}"#.to_string(), None)
                 } else if target.starts_with("/v1/auth/token/lookup-self") {
                     (200, "{}".to_string(), None)
+                } else if target.starts_with("/v1/kv/data/app?version=3") {
+                    (
+                        200,
+                        r#"{"data":{"data":{"password":"v3"}}}"#.to_string(),
+                        None,
+                    )
                 } else if target.starts_with("/v1/kv/data/my%20app%231") {
                     (
                         200,
@@ -825,6 +843,15 @@ mod tests {
         assert_eq!(
             resolve(&spaced, &browser).map(|r| r.password),
             Ok("spaced".to_string())
+        );
+        // …while a query (a KV version) stays one
+        let v3 = ConnConfig {
+            vault_path: "kv/data/app?version=3".into(),
+            ..spaced.clone()
+        };
+        assert_eq!(
+            resolve(&v3, &browser).map(|r| r.password),
+            Ok("v3".to_string())
         );
         // a body that is no JSON: its text, not "no details"
         let proxy = ConnConfig {

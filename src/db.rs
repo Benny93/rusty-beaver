@@ -841,7 +841,8 @@ impl Session {
         // SQLite keeps the transaction open when COMMIT fails (deferred foreign key, busy)
         if let Err(e) = self.query("COMMIT") {
             let _ = self.query("ROLLBACK");
-            return Err(format!("{e}\n(rolled back)"));
+            // a connection lost during COMMIT leaves unknown what was kept
+            return Err(format!("{e}\n(COMMIT failed: reload to see what was kept)"));
         }
         Ok(QueryResult {
             affected: Some(affected),

@@ -1687,20 +1687,8 @@ fn quote_end(b: &[u8], i: usize, mysql: bool) -> usize {
 
 fn writes(sql: &str, mysql: bool) -> bool {
     const WRITES: &[&str] = &[
-        "INSERT",
-        "UPDATE",
-        "DELETE",
-        "MERGE",
-        "DROP",
-        "ALTER",
-        "TRUNCATE",
-        "CREATE",
-        "GRANT",
-        "REVOKE",
-        "RENAME",
-        "INTO",
-        // Postgres' SET as a function: set_config('default_transaction_read_only', 'off', …)
-        "SET_CONFIG",
+        "INSERT", "UPDATE", "DELETE", "MERGE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT",
+        "REVOKE", "RENAME", "INTO",
     ];
     // Only as a statement's first word: "comment" and "lock" are column names too.
     const LEADING: &[&str] = &[
@@ -1772,6 +1760,11 @@ fn writes(sql: &str, mysql: bool) -> bool {
                 if is(WRITES)
                     || first && is(LEADING)
                     || set && is(UNLOCKS)
+                    // Postgres' SET as a function: set_config('default_transaction_read_only', …)
+                    || word.eq_ignore_ascii_case("SET_CONFIG") && {
+                        let upper = sql.to_ascii_uppercase();
+                        UNLOCKS.iter().any(|u| upper.contains(u))
+                    }
                     // PRAGMA query_only(0) is PRAGMA query_only = 0 (reading it has no "(")
                     || pragma && is(UNLOCKS) && sql[i..].trim_start().starts_with('(')
                     || word.eq_ignore_ascii_case("WRITE") && prev.eq_ignore_ascii_case("READ")
@@ -3020,6 +3013,11 @@ mod tests {
         assert!(!is_write_any("PRAGMA table_info(t)"));
         assert!(is_write(
             "SELECT set_config('default_transaction_read_only', 'off', false)",
+            false
+        ));
+        // other settings stay what SET for them is: no write
+        assert!(!is_write(
+            "SELECT set_config('search_path', 'app', false)",
             false
         ));
         // a word in a later string stays text after an escaped quote or a closing backslash

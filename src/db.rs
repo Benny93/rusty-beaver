@@ -651,8 +651,10 @@ impl Session {
     /// takes back the ones before it too; committing is up to the user.
     pub fn apply_in(&mut self, statements: &[String], own_tx: bool) -> Result<QueryResult, String> {
         if !own_tx {
+            // MySQL accepts a savepoint outside a transaction (and keeps nothing), so `run`
+            // forgets the transaction after MySQL DDL, which commits it
             if self.query("SAVEPOINT rusty_beaver").is_err() {
-                // no transaction after all (DDL committed it, or COMMIT typed in a script)
+                // no transaction after all (COMMIT typed in a script)
                 return self.apply(statements);
             }
             let mut affected = 0;

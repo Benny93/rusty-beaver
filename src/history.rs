@@ -31,7 +31,10 @@ pub fn load() -> Vec<Entry> {
 }
 
 fn load_from(p: &std::path::Path) -> Vec<Entry> {
-    let text = std::fs::read_to_string(p).unwrap_or_default();
+    // lossy: a line cut inside a character must not cost the whole history
+    let text = std::fs::read(p)
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
     let mut v: Vec<Entry> = text
         .lines()
         .filter_map(|l| serde_json::from_str(l).ok())

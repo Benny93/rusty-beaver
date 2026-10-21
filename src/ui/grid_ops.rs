@@ -49,6 +49,8 @@ impl AppView {
         if changes && t.running {
             let e = "wait until it has loaded or saved".to_string();
             if op == GridOp::Save {
+                // an agent's confirm is used up here too: the user's next save asks again
+                (self.tabs[ix].confirmed, self.tabs[ix].agent) = (false, false);
                 done(self, Err(e.clone()), window, cx);
             }
             return Err(e);
@@ -241,6 +243,14 @@ impl AppView {
                     _ => (target.clone(), None),
                 };
                 let conn = t.conn;
+                // an open tab of that table with unsaved edits keeps its rows and filter
+                let target_tab = self
+                    .tabs
+                    .iter()
+                    .position(|o| o.conn == conn && o.kind == TabKind::Table(ref_table.clone()));
+                if let Some(i) = target_tab {
+                    self.unsaved_edits([i], cx)?;
+                }
                 self.open_table(conn, ref_table.clone(), window, cx, done);
                 let filter = ref_col
                     .map(|c| format!("{} = {}", driver.quote(&c), driver.literal(&value)))

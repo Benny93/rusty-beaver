@@ -232,7 +232,7 @@ impl AppView {
             crate::history::save_all(&self.history);
         }
         self.save();
-        self.save_session_soon(cx); // tabs are saved by connection name
+        self.write_session(cx); // tabs are saved by connection name: now, not in a second
         self.status = format!("Updated connection {}", cfg.name);
         cx.notify();
         Ok(())

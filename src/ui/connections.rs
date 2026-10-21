@@ -328,8 +328,10 @@ impl AppView {
             return done(self, Err("no transaction is open".into()), window, cx);
         }
         let sql = if commit { "COMMIT" } else { "ROLLBACK" };
-        self.with_session::<QueryResult>(
+        // no retry: a COMMIT on a fresh connection would report statements lost with the old one
+        self.with_session_write::<QueryResult>(
             id,
+            true,
             move |s| s.query(sql),
             window,
             cx,

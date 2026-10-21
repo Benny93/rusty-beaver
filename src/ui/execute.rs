@@ -213,12 +213,14 @@ impl AppView {
             .conn_ix(conn)
             .is_some_and(|i| self.conns[i].cfg.manual_commit);
         let in_tx = self.conn_ix(conn).is_some_and(|i| self.conns[i].in_tx);
-        let ends_tx = {
-            let head = sql.trim_start().to_ascii_uppercase();
-            ["COMMIT", "ROLLBACK", "END"]
-                .iter()
-                .any(|k| head.starts_with(k))
-        };
+        let head = sql.trim_start().to_ascii_uppercase();
+        let starts = |words: &[&str]| words.iter().any(|k| head.starts_with(k));
+        // MySQL commits before and after DDL: no transaction is open afterwards
+        let mysql_ddl = self
+            .conn_ix(conn)
+            .is_some_and(|i| self.conns[i].cfg.driver == Driver::Mysql)
+            && starts(&["CREATE", "ALTER", "DROP", "TRUNCATE", "RENAME"]);
+        let ends_tx = starts(&["COMMIT", "ROLLBACK", "END"]) || mysql_ddl;
         // Smart commit: only a change opens the transaction; reads run inside an open one.
         let write = db::is_write(&sql);
         let need_begin = manual && !in_tx && write && !ends_tx;
@@ -321,16 +323,29 @@ impl AppView {
                         Err(e)
                     }
                 };
-                // DDL may have changed the table list.
-                // ponytail: blocks the UI for one catalog query, only after writes
+                // DDL may have changed the table list: re-read it in the background (the
+                // session may be busy with another tab's query; the UI must not wait for it).
                 if write
                     && let Some(ix) = v.conn_ix(conn)
                     && let Some(s) = v.conns[ix].session.clone()
-                    && let Ok(tables) = s.lock().unwrap().tables()
-                    && tables != v.conns[ix].tables
                 {
-                    v.conns[ix].tables = tables;
-                    v.load_catalog(conn, cx);
+                    let tables = cx.background_spawn(async move {
+                        s.lock().map_err(|e| e.to_string()).and_then(|mut s| s.tables())
+                    });
+                    cx.spawn(async move |this, cx| {
+                        if let Ok(tables) = tables.await {
+                            let _ = this.update(cx, |v, cx| {
+                                if let Some(ix) = v.conn_ix(conn)
+                                    && tables != v.conns[ix].tables
+                                {
+                                    v.conns[ix].tables = tables;
+                                    v.load_catalog(conn, cx);
+                                    cx.notify();
+                                }
+                            });
+                        }
+                    })
+                    .detach();
                 }
                 cx.notify();
                 done(v, out, window, cx)

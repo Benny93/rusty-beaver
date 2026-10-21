@@ -81,26 +81,34 @@ impl AppView {
             cx.background_executor().timer(Duration::from_secs(1)).await;
             let _ = this.update(cx, |v, cx| {
                 v.session_dirty = false;
-                let scripts: Vec<Value> = v
-                    .tabs
-                    .iter()
-                    .map(|t| {
-                        let conn = v.conn_ix(t.conn).map(|i| v.conns[i].cfg.name.clone());
-                        match &t.kind {
-                            TabKind::Sql => json!({ "connection": conn, "sql": t.editor.read(cx).value().to_string(), "path": t.path }),
-                            TabKind::Table(name) => json!({ "connection": conn, "table": name, "filter": t.filter.read(cx).value().to_string() }),
-                            TabKind::Diagram => json!({ "connection": conn, "er_diagram": true }),
-                        }
-                    })
-                    .collect();
-                let path = session_path();
-                let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
-                if let Err(e) = db::write_atomic(&path, serde_json::to_string_pretty(&json!({ "scripts": scripts })).unwrap()) {
-                    v.status = format!("Could not save open scripts: {e}");
-                }
+                v.write_session(cx);
             });
         })
         .detach();
+    }
+
+    /// Write the open tabs to `session.json` now.
+    pub(super) fn write_session(&mut self, cx: &mut Context<Self>) {
+        let scripts: Vec<Value> = self
+            .tabs
+            .iter()
+            .map(|t| {
+                let conn = self.conn_ix(t.conn).map(|i| self.conns[i].cfg.name.clone());
+                match &t.kind {
+                    TabKind::Sql => json!({ "connection": conn, "sql": t.editor.read(cx).value().to_string(), "path": t.path }),
+                    TabKind::Table(name) => json!({ "connection": conn, "table": name, "filter": t.filter.read(cx).value().to_string() }),
+                    TabKind::Diagram => json!({ "connection": conn, "er_diagram": true }),
+                }
+            })
+            .collect();
+        let path = session_path();
+        let _ = std::fs::create_dir_all(path.parent().unwrap_or(std::path::Path::new(".")));
+        if let Err(e) = db::write_atomic(
+            &path,
+            serde_json::to_string_pretty(&json!({ "scripts": scripts })).unwrap(),
+        ) {
+            self.status = format!("Could not save open scripts: {e}");
+        }
     }
 
     /// Reopen the scripts of the last session.

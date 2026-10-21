@@ -246,22 +246,32 @@ pub fn suggest(text: &str, offset: usize, catalog: &Catalog) -> (usize, Vec<Sugg
     let head = before[..start]
         .strip_suffix(['"', '`'])
         .unwrap_or(&before[..start]);
-    let qualifier = head.strip_suffix('.').map(|q| {
-        // "my table".: back to the opening quote (spaces and all)
+    // where the name ending `q` starts: "my table" back to its opening quote (spaces and
+    // all), else the word
+    let name_start = |q: &str| {
         let quoted = q
             .strip_suffix(['"', '`'])
             .and_then(|inner| inner.rfind(&q[q.len() - 1..]));
-        let qs = quoted.unwrap_or_else(|| {
+        quoted.unwrap_or_else(|| {
             q.char_indices()
                 .rev()
                 .take_while(|(_, c)| is_word(*c) || *c == '"' || *c == '`')
                 .last()
                 .map(|(i, _)| i)
                 .unwrap_or(q.len())
-        });
-        q[qs..]
-            .trim_matches(|c| c == '"' || c == '`')
-            .to_lowercase()
+        })
+    };
+    let unquote = |n: &str| n.trim_matches(|c| c == '"' || c == '`').to_lowercase();
+    let qualifier = head.strip_suffix('.').map(|q| {
+        let qs = name_start(q);
+        let name = unquote(&q[qs..]);
+        // audit.dams.: that schema's table, not the first dams
+        match q[..qs].strip_suffix('.') {
+            Some(s) if !s.is_empty() && name_start(s) < s.len() => {
+                format!("{}.{name}", unquote(&s[name_start(s)..]))
+            }
+            _ => name,
+        }
     });
     let mut out = vec![];
     let col = |name: &str, ty: &str, table: &str| Suggestion {
@@ -694,5 +704,18 @@ mod tests {
         c2.set_columns("audit.dams", vec![("changed".into(), "TIMESTAMP".into())]);
         let (_, s) = suggest("SELECT dams.h FROM public.dams", 13, &c2);
         assert_eq!(s[0].label, "height"); // public's dams, though audit.dams loaded last
+        // schema.table. names its schema's table
+        for text in [
+            "SELECT audit.dams. FROM public.dams, audit.dams",
+            "SELECT \"audit\".\"dams\".",
+        ] {
+            let off = text.find(". FROM").map_or(text.len(), |i| i + 1);
+            let (_, s) = suggest(text, off, &c2);
+            assert_eq!(
+                s.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(),
+                ["changed"],
+                "{text}"
+            );
+        }
     }
 }

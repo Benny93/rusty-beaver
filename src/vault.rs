@@ -49,16 +49,17 @@ fn parse_ref(r: &str) -> Result<(String, Option<String>), String> {
         .ok_or("not a vault: reference")?
         .trim()
         .trim_start_matches('/');
-    if rest.is_empty() {
+    // spaces around # are no part of path or field; vault:#pw has no path
+    let (path, field) = match rest.split_once('#') {
+        Some((p, f)) => (p.trim(), Some(f.trim()).filter(|f| !f.is_empty())),
+        None => (rest, None),
+    };
+    if path.trim_start_matches('/').is_empty() {
         return Err(
             "empty Vault path: use vault:<path>#<field> or vault:database/creds/<role>".into(),
         );
     }
-    Ok(match rest.split_once('#') {
-        Some((p, f)) if !f.is_empty() => (p.to_string(), Some(f.to_string())),
-        Some((p, _)) => (p.to_string(), None),
-        None => (rest.to_string(), None),
-    })
+    Ok((path.to_string(), field.map(String::from)))
 }
 
 /// Tokens of this session, per Vault address.
@@ -476,6 +477,11 @@ mod tests {
     #[test]
     fn references_and_query_strings() {
         assert_eq!(decode("a%+5b%2Fc"), "a% 5b/c"); // %+5 is no escape (+ is a space)
+        assert!(parse_ref("vault:#pw").is_err() && parse_ref("vault:/#pw").is_err()); // no path
+        assert_eq!(
+            parse_ref("vault:secret/data/db # pw").unwrap(),
+            ("secret/data/db".to_string(), Some("pw".to_string()))
+        );
         assert_eq!(
             parse_ref("vault:kv/data/app#password").unwrap(),
             ("kv/data/app".to_string(), Some("password".to_string()))

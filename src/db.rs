@@ -1408,7 +1408,8 @@ pub fn generate(
         "update" => format!(
             "UPDATE {t}\nSET {}\nWHERE {where_};",
             cols.iter()
-                .filter(|(_, k)| !k)
+                // only key columns (a link table): they are what there is to set
+                .filter(|(_, k)| !k || cols.iter().all(|(_, k)| *k))
                 .map(|(c, _)| format!("{} = ?", driver.quote(c)))
                 .collect::<Vec<_>>()
                 .join(",\n    ")
@@ -2473,6 +2474,10 @@ mod tests {
             "INSERT INTO \"public\".\"t\" (\"id\", \"name\")\nVALUES (?, ?);"
         );
         assert!(generate(Driver::Sqlite, "t", &cols, "nope").is_err());
+        // a link table whose columns are all key: no "SET \nWHERE"
+        let keys = [("a".to_string(), true), ("b".to_string(), true)];
+        let u = generate(Driver::Sqlite, "t", &keys, "update").unwrap();
+        assert!(!u.contains("SET \n"), "{u}");
     }
 
     #[test]

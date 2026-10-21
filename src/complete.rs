@@ -316,9 +316,11 @@ pub fn suggest(text: &str, offset: usize, catalog: &Catalog) -> (usize, Vec<Sugg
     if prefix.is_empty() {
         return (start, out);
     }
+    // after a quote a name is being typed ("se): no keywords
+    let quoted = before[..start].ends_with(['"', '`']);
     for k in KEYWORDS
         .iter()
-        .filter(|k| k.to_lowercase().starts_with(&prefix))
+        .filter(|k| !quoted && k.to_lowercase().starts_with(&prefix))
     {
         out.push(Suggestion {
             label: k.to_string(),
@@ -629,6 +631,18 @@ mod tests {
         ] {
             assert!(!suggest(text, text.len(), &c).1.is_empty(), "{text}");
         }
+    }
+
+    #[test]
+    fn no_keywords_after_a_quote() {
+        // "se is a name being typed: SELECT would leave "SELECT behind
+        let text = "SELECT * FROM t WHERE \"se";
+        let (_, s) = suggest(text, text.len(), &catalog());
+        assert!(
+            s.iter().all(|x| x.kind != Kind::Keyword),
+            "{:?}",
+            s.iter().map(|x| &x.label).collect::<Vec<_>>()
+        );
     }
 
     #[test]

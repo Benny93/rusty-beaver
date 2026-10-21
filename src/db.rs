@@ -1796,7 +1796,8 @@ fn writes(sql: &str, mysql: bool) -> bool {
             b'\'' if e_string(b, i) => i = quote_end(b, i, true),
             // a quoted name is still a name: SET "default_transaction_read_only" = off,
             // "set_config"(…)
-            b'"' | b'`' => {
+            // (MySQL quotes names with ` only: "…" is a string there)
+            b'"' | b'`' if b[i] == b'`' || !mysql => {
                 let end = quote_end(b, i, mysql);
                 let name = sql[i + 1..end.min(b.len())].to_ascii_uppercase();
                 let unlocks = |s: &str| UNLOCKS.contains(&s);
@@ -1810,7 +1811,7 @@ fn writes(sql: &str, mysql: bool) -> bool {
                 }
                 i = end;
             }
-            b'\'' => i = quote_end(b, i, mysql),
+            b'\'' | b'"' => i = quote_end(b, i, mysql),
             b'-' | b'#' if line_comment(b, i, mysql) => {
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
@@ -3157,6 +3158,8 @@ mod tests {
             "SELECT \"default_transaction_read_only\" FROM t",
             false
         ));
+        // MySQL: "…" is a string there, not a name
+        assert!(!is_write("SET @v = \"query_only\"", true));
         assert!(!is_write_any("PRAGMA table_info(t)"));
         assert!(is_write(
             "SELECT set_config('default_transaction_read_only', 'off', false)",

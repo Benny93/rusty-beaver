@@ -110,10 +110,11 @@ fn is_word(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-/// `alias -> table` from `FROM t a`, `JOIN t AS a` and bare `FROM t`.
+/// `alias -> table` from `FROM t a`, `JOIN t AS a`, bare `FROM t` and `FROM t a, u b`.
 fn aliases(text: &str) -> HashMap<String, String> {
-    let words: Vec<&str> = text
-        .split(|c: char| c.is_whitespace() || c == ',' || c == '(' || c == ')' || c == ';')
+    let spaced = text.replace(',', " , "); // a comma is a word of its own
+    let words: Vec<&str> = spaced
+        .split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == ';')
         .filter(|w| !w.is_empty())
         .collect();
     let mut out = HashMap::new();
@@ -125,20 +126,29 @@ fn aliases(text: &str) -> HashMap<String, String> {
         {
             continue;
         }
-        let Some(table) = words.get(i + 1).map(|t| t.replace(['"', '`'], ""))
+        let mut at = i + 1;
+        // table [AS] alias, then more of them after commas
+        while let Some(table) = words
+            .get(at)
+            .filter(|t| **t != ",")
+            .map(|t| t.replace(['"', '`'], ""))
         // "public"."users" -> public.users
-        else {
-            continue;
-        };
-        out.insert(table.to_lowercase(), table.to_string());
-        let mut next = words.get(i + 2).copied();
-        if next.is_some_and(|n| n.eq_ignore_ascii_case("as")) {
-            next = words.get(i + 3).copied();
-        }
-        if let Some(a) = next.filter(|a| {
-            a.chars().all(is_word) && !KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(a))
-        }) {
-            out.insert(a.to_lowercase(), table.to_string());
+        {
+            out.insert(table.to_lowercase(), table.to_string());
+            at += 1;
+            if words.get(at).is_some_and(|n| n.eq_ignore_ascii_case("as")) {
+                at += 1;
+            }
+            if let Some(a) = words.get(at).filter(|a| {
+                a.chars().all(is_word) && !KEYWORDS.iter().any(|k| k.eq_ignore_ascii_case(a))
+            }) {
+                out.insert(a.to_lowercase(), table.to_string());
+                at += 1;
+            }
+            if words.get(at) != Some(&",") {
+                break;
+            }
+            at += 1;
         }
     }
     out
@@ -185,6 +195,21 @@ pub fn suggest(text: &str, offset: usize, catalog: &Catalog) -> (usize, Vec<Sugg
         {
             if name.to_lowercase().starts_with(&prefix) {
                 out.push(col(name, ty, &table));
+            }
+        }
+        if out.is_empty() {
+            // schema.ta: the schema's tables
+            for t in &catalog.tables {
+                if let Some((s, b)) = t.split_once('.')
+                    && s.eq_ignore_ascii_case(&table)
+                    && b.to_lowercase().starts_with(&prefix)
+                {
+                    out.push(Suggestion {
+                        label: b.to_string(),
+                        kind: Kind::Table,
+                        detail: format!("table · {s}"),
+                    });
+                }
             }
         }
         return (start, out);
@@ -352,5 +377,9 @@ mod tests {
         assert_eq!(s[0].label, "height");
         let (_, s) = suggest("SELECT d.h FROM \"public\".\"dams\" d", 10, &c);
         assert_eq!(s[0].label, "height"); // the quoting the app writes itself
+        let (_, s) = suggest("SELECT l. FROM beavers b, lodges l", 9, &c);
+        assert_eq!(s[0].label, "name"); // comma-separated FROM list
+        let (start, s) = suggest("SELECT * FROM public.da", 23, &c);
+        assert_eq!((start, s[0].label.as_str()), (21, "dams")); // schema.
     }
 }

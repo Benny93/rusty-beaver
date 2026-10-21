@@ -149,7 +149,7 @@ impl AppView {
                         .into_any_element(),
                 );
             }
-            let q = self.side_filter.read(cx).value().to_lowercase();
+            let q = self.side_filter.read(cx).value().trim().to_lowercase(); // pasted "users "
             for (name, kind) in c
                 .tables
                 .iter()

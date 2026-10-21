@@ -324,21 +324,27 @@ impl AppView {
                         &["Save", "Cancel"],
                         cx,
                     );
+                    let key = self.tabs[ix].grid.entity_id();
                     cx.spawn_in(window, async move |this, cx| {
-                        if answer.await == Ok(0) {
-                            let _ = this.update_in(cx, |v, w, cx| {
-                                // The tab may have closed, or another become active, meanwhile.
-                                let Some(t) = v.tabs.get_mut(ix) else { return };
-                                t.confirmed = true;
-                                v.active = ix;
-                                let _ = v.grid_op(GridOp::Save, w, cx, done);
-                            });
-                        }
+                        let yes = answer.await == Ok(0);
+                        let _ = this.update_in(cx, |v, w, cx| {
+                            // The tab may have closed, moved, or another become active, meanwhile.
+                            match v.tab_ix(key) {
+                                Some(ix) if yes => {
+                                    v.tabs[ix].confirmed = true;
+                                    v.active = ix;
+                                    let _ = v.grid_op(GridOp::Save, w, cx, done);
+                                }
+                                None if yes => done(v, Err("the tab was closed".into()), w, cx),
+                                _ => done(v, Err("cancelled".into()), w, cx),
+                            }
+                        });
                     })
                     .detach();
                     return Ok(Some("Waiting for confirmation…".into()));
                 }
                 self.tabs[ix].running = true;
+                let key = self.tabs[ix].grid.entity_id();
                 // Manual commit: the changes join the open transaction instead of committing.
                 let (manual, in_tx) = self
                     .conn_ix(conn)
@@ -363,16 +369,20 @@ impl AppView {
                     window,
                     cx,
                     Box::new(move |v, r, window, cx| {
-                        if let Some(t) = v.tabs.get_mut(ix) {
+                        let ix = v.tab_ix(key);
+                        if let Some(t) = ix.and_then(|ix| v.tabs.get_mut(ix)) {
                             t.running = false;
                         }
                         match r {
                             Ok(_) => {
                                 v.status = if manual { format!("Saved: {n} statement(s) in the open transaction; Commit to keep them") } else { format!("Saved: {n} statement(s) committed") };
-                                v.reload_table(ix, window, cx, done);
+                                match ix {
+                                    Some(ix) => v.reload_table(ix, window, cx, done),
+                                    None => done(v, Ok(json!({ "saved": n })), window, cx),
+                                }
                             }
                             Err(e) => {
-                                if let Some(t) = v.tabs.get_mut(ix) {
+                                if let Some(t) = ix.and_then(|ix| v.tabs.get_mut(ix)) {
                                     t.message = Some(Err(e.clone()));
                                 }
                                 cx.notify();

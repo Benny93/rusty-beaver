@@ -18,11 +18,13 @@ impl AppView {
             .iter()
             .map(|(n, i)| (n.clone(), i.read(cx).value().to_string()))
             .collect();
-        if let Some(t) = self.tabs.get_mut(p.tab) {
-            t.param_values.extend(values.clone());
-        }
+        let Some(tab) = self.tab_ix(p.tab) else {
+            cx.notify();
+            return done(self, Err("the tab was closed".into()), window, cx);
+        };
+        self.tabs[tab].param_values.extend(values.clone());
         match db::bind(&p.sql, &values) {
-            Ok(bound) => self.run(p.tab, Source::Raw(bound), p.max_rows, window, cx, done),
+            Ok(bound) => self.run(tab, Source::Raw(bound), p.max_rows, window, cx, done),
             Err(e) => done(self, Err(e), window, cx),
         }
         cx.notify();
@@ -352,8 +354,12 @@ impl AppView {
             db::forget_password(&c.cfg);
         }
         self.conns.retain(|c| c.id != id);
+        let active = self.tab_key(self.active);
         self.tabs.retain(|t| t.conn != id);
-        self.active = self.active.min(self.tabs.len().saturating_sub(1));
+        self.active = active
+            .and_then(|k| self.tab_ix(k))
+            .unwrap_or(self.active)
+            .min(self.tabs.len().saturating_sub(1));
         if self.selected.as_ref().is_some_and(|s| s.0 == id) {
             self.selected = None;
         }

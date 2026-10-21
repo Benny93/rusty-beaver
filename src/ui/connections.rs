@@ -19,7 +19,9 @@ impl AppView {
                 if let Err(e) = r {
                     return done(v, Err(e), w, cx);
                 }
-                let Some(i) = v.conn_ix(id) else { return };
+                let Some(i) = v.conn_ix(id) else {
+                    return done(v, Err("connection is gone".into()), w, cx);
+                };
                 let c = &v.conns[i];
                 let tables: Vec<String> = c
                     .tables

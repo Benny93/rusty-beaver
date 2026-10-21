@@ -118,7 +118,11 @@ impl AppView {
                         Ok(id) => id,
                         Err(e) => return now(self, Err(e), window, cx, done),
                     };
-                    let active_ok = self.tabs.get(self.active).is_some_and(|t| t.conn == id);
+                    // a script tab: a table tab's grid saves edits into its table
+                    let active_ok = self
+                        .tabs
+                        .get(self.active)
+                        .is_some_and(|t| t.conn == id && t.kind == TabKind::Sql);
                     if !active_ok {
                         match self
                             .tabs
@@ -277,10 +281,13 @@ impl AppView {
                     let r = r.map(|_| json!({ "saved": true, "status": v.status, "rows": v.tabs.get(v.active).map(|t| t.grid.read(cx).delegate().order.len()) }));
                     done(v, r, w, cx)
                 });
-                if let Some(t) = self.tabs.get_mut(self.active) {
-                    (t.confirmed, t.agent) = (a["confirm"].as_bool().unwrap_or(false), true);
+                match self.tabs.get_mut(self.active) {
+                    Some(t) => {
+                        (t.confirmed, t.agent) = (a["confirm"].as_bool().unwrap_or(false), true);
+                        let _ = self.grid_op(GridOp::Save, window, cx, d); // calls `d`, also on errors
+                    }
+                    None => d(self, Err("no tab open".into()), window, cx),
                 }
-                let _ = self.grid_op(GridOp::Save, window, cx, d);
             }
             "revert_changes" => {
                 let r = self

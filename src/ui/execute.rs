@@ -14,7 +14,9 @@ impl AppView {
         done: Done,
     ) {
         // A new run replaces a parameter dialog still waiting on this tab.
-        if self.params.as_ref().is_some_and(|p| p.tab == tab) {
+        if let Some(key) = self.tab_key(tab)
+            && self.params.as_ref().is_some_and(|p| p.tab == key)
+        {
             self.submit_params(false, window, cx);
         }
         if matches!(src, Source::Given(_))
@@ -25,6 +27,7 @@ impl AppView {
         let Some(t) = self.tabs.get_mut(tab) else {
             return done(self, Err("no such tab".into()), window, cx);
         };
+        let key = t.grid.entity_id();
         let raw = matches!(src, Source::Raw(_));
         let sql = match src {
             Source::Given(sql) => {
@@ -85,7 +88,7 @@ impl AppView {
                 first.update(cx, |i, cx| i.focus(window, cx));
             }
             self.params = Some(ParamPrompt {
-                tab,
+                tab: key,
                 sql,
                 inputs,
                 max_rows,
@@ -145,13 +148,14 @@ impl AppView {
             cx.spawn_in(window, async move |this, cx| {
                 let yes = answer.await == Ok(0);
                 let _ = this.update_in(cx, |v, w, cx| {
-                    if yes {
-                        if let Some(t) = v.tabs.get_mut(tab) {
-                            t.confirmed = true;
+                    // the tab may have moved (or closed) meanwhile
+                    match v.tab_ix(key) {
+                        Some(tab) if yes => {
+                            v.tabs[tab].confirmed = true;
+                            v.run(tab, Source::Raw(sql), max_rows, w, cx, done);
                         }
-                        v.run(tab, Source::Raw(sql), max_rows, w, cx, done);
-                    } else {
-                        done(v, Err("cancelled".into()), w, cx);
+                        None if yes => done(v, Err("the tab was closed".into()), w, cx),
+                        _ => done(v, Err("cancelled".into()), w, cx),
                     }
                 });
             })
@@ -252,7 +256,10 @@ impl AppView {
                 if v.history.len() > history::KEEP {
                     v.history.remove(0);
                 }
-                let Some(t) = v.tabs.get_mut(tab) else { return };
+                let Some(t) = v.tab_ix(key).and_then(|i| v.tabs.get_mut(i)) else {
+                    cx.notify();
+                    return done(v, Err("the tab was closed".into()), window, cx);
+                };
                 t.running = false;
                 let out = match r {
                     Ok((res, mut earlier)) => {
@@ -293,7 +300,9 @@ impl AppView {
                     }
                 };
                 // DDL may have changed the table list.
-                if let Some(ix) = v.conn_ix(conn)
+                // ponytail: blocks the UI for one catalog query, only after writes
+                if write
+                    && let Some(ix) = v.conn_ix(conn)
                     && let Some(s) = v.conns[ix].session.clone()
                     && let Ok(tables) = s.lock().unwrap().tables()
                     && tables != v.conns[ix].tables
@@ -414,7 +423,7 @@ impl AppView {
             return done(self, Err("not a table tab".into()), window, cx);
         };
         let Some(ix) = self.conn_ix(t.conn) else {
-            return;
+            return done(self, Err("connection is gone".into()), window, cx);
         };
         let driver = self.conns[ix].cfg.driver;
         let filter = t.filter.read(cx).value().to_string();
@@ -428,7 +437,7 @@ impl AppView {
                 format!(" WHERE {filter}")
             }
         );
-        let conn = t.conn;
+        let (conn, key) = (t.conn, t.grid.entity_id());
         self.run(
             tab,
             Source::Given(sql),
@@ -444,7 +453,7 @@ impl AppView {
                         w,
                         cx,
                         Box::new(move |v, c, _, cx| {
-                            if let Some(t) = v.tabs.get_mut(tab) {
+                            if let Some(t) = v.tab_ix(key).and_then(|i| v.tabs.get_mut(i)) {
                                 t.total =
                                     c.ok().and_then(|c| c.rows.first()?.first()?.parse().ok());
                             }

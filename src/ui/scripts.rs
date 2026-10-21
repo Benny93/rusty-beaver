@@ -221,9 +221,14 @@ impl AppView {
             .and_then(|t| t.path.as_ref()?.parent().map(|p| p.to_path_buf()))
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_default());
         let rx = cx.prompt_for_new_path(&dir, Some(&name));
+        let key = self.tab_key(tab);
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(path))) = rx.await {
                 let _ = this.update(cx, |v, cx| {
+                    let Some(tab) = key.and_then(|k| v.tab_ix(k)) else {
+                        v.status = "The script tab was closed".into();
+                        return;
+                    };
                     if let Err(e) = v.save_script(tab, Some(path), cx) {
                         v.status = e;
                     }

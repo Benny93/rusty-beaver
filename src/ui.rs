@@ -433,7 +433,8 @@ struct ConnDialog {
 
 /// Values asked for the `:name` parameters of a statement before it runs.
 struct ParamPrompt {
-    tab: usize,
+    /// `tab_key` of the tab.
+    tab: EntityId,
     sql: String,
     inputs: Vec<(String, Entity<InputState>)>,
     max_rows: usize,
@@ -570,6 +571,16 @@ impl AppView {
             copied: None,
             params: None,
         }
+    }
+
+    /// A tab's key for async work: its grid's entity, which (unlike its index) survives
+    /// other tabs closing.
+    fn tab_key(&self, tab: usize) -> Option<EntityId> {
+        self.tabs.get(tab).map(|t| t.grid.entity_id())
+    }
+
+    fn tab_ix(&self, key: EntityId) -> Option<usize> {
+        self.tabs.iter().position(|t| t.grid.entity_id() == key)
     }
 
     fn conn_ix(&self, id: u64) -> Option<usize> {
@@ -767,6 +778,7 @@ impl AppView {
         let sql = self.conns[ix].cfg.driver.select_all(&table, "", 200);
         self.selected = Some((id, Some(table.clone())));
         let tab = self.open_tab(id, TabKind::Table(table.clone()), sql.clone(), window, cx);
+        let key = self.tabs[tab].grid.entity_id();
         // Columns view (and the key for editing), DDL, then the data.
         let t = table.clone();
         self.with_session::<(QueryResult, String)>(
@@ -780,6 +792,9 @@ impl AppView {
             window,
             cx,
             Box::new(move |v, r, window, cx| {
+                let Some(tab) = v.tab_ix(key) else {
+                    return done(v, Err("the tab was closed".into()), window, cx);
+                };
                 if let (Ok((cols, ddl)), Some(t)) = (r, v.tabs.get_mut(tab)) {
                     t.key = cols
                         .rows
@@ -822,8 +837,9 @@ impl AppView {
         if i < self.tabs.len() {
             self.save_session_soon(cx);
             self.tabs.remove(i);
-            if self.active >= self.tabs.len() {
-                self.active = self.tabs.len().saturating_sub(1);
+            // the active tab stays active when one left of it closes
+            if i < self.active || self.active >= self.tabs.len() {
+                self.active = self.active.saturating_sub(1);
             }
             cx.notify();
         }

@@ -13,12 +13,14 @@ impl AppView {
     ) {
         let tab = self.open_tab(id, TabKind::Diagram, String::new(), window, cx);
         self.tabs[tab].running = true;
+        let key = self.tabs[tab].grid.entity_id();
         self.with_session::<(Vec<crate::er::Table>, Vec<db::ForeignKey>)>(
             id,
             |s| s.schema(80),
             window,
             cx,
             Box::new(move |v, r, w, cx| {
+                let tab = v.tab_ix(key).unwrap_or(usize::MAX); // closed: no tab gets it
                 let out = r.map(|(tables, links)| {
                     let j = json!({
                         "tables": tables.iter().map(|t| json!({ "name": t.name, "columns": t.columns.iter().map(|c| json!({ "name": c.0, "type": c.1, "key": c.2 })).collect::<Vec<_>>() })).collect::<Vec<_>>(),

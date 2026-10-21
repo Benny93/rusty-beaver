@@ -224,6 +224,13 @@ impl AppView {
                 TabKind::Table(_) => {}
             }
         }
+        if old.name != cfg.name {
+            // history entries name their connection too
+            for e in self.history.iter_mut().filter(|e| e.connection == old.name) {
+                e.connection = cfg.name.clone();
+            }
+            crate::history::save_all(&self.history);
+        }
         self.save();
         self.save_session_soon(cx); // tabs are saved by connection name
         self.status = format!("Updated connection {}", cfg.name);

@@ -38,14 +38,26 @@ fn load_from(p: &std::path::Path) -> Vec<Entry> {
         .collect();
     if v.len() > KEEP {
         v.drain(..v.len() - KEEP);
-        // Rewrite the trimmed file so it does not grow forever.
-        let body: String = v
-            .iter()
-            .map(|e| serde_json::to_string(e).unwrap() + "\n")
-            .collect();
-        let _ = std::fs::write(p, body);
+        save_to(p, &v); // trimmed, so the file does not grow forever
     }
     v
+}
+
+/// Replace the file with these entries (after a trim or a connection rename).
+pub fn save_all(entries: &[Entry]) {
+    save_to(&path(), entries)
+}
+
+fn save_to(p: &std::path::Path, entries: &[Entry]) {
+    let body: String = entries
+        .iter()
+        .map(|e| serde_json::to_string(e).unwrap() + "\n")
+        .collect();
+    // a new file renamed over the old one: a crash midway keeps the old history
+    let tmp = p.with_extension("jsonl.tmp");
+    if std::fs::write(&tmp, body).is_ok() {
+        let _ = std::fs::rename(&tmp, p);
+    }
 }
 
 pub fn append(e: &Entry) {

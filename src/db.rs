@@ -195,7 +195,7 @@ impl Driver {
                     "SELECT c.column_name, (SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a \
                      WHERE a.attrelid = (quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))::regclass AND a.attname = c.column_name), \
                      c.is_nullable, CASE WHEN k.column_name IS NOT NULL THEN 'PK' ELSE '' END, \
-                     CASE WHEN c.is_generated = 'ALWAYS' OR c.identity_generation = 'ALWAYS' THEN 'generated' ELSE '' END \
+                     CASE WHEN c.is_generated = 'ALWAYS' THEN 'generated' WHEN c.identity_generation = 'ALWAYS' THEN 'identity' ELSE '' END \
                      FROM information_schema.columns c LEFT JOIN (SELECT ku.column_name FROM information_schema.table_constraints tc \
                      JOIN information_schema.key_column_usage ku ON tc.constraint_name = ku.constraint_name AND tc.table_schema = ku.table_schema \
                      WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = {s} AND tc.table_name = {t}) k ON k.column_name = c.column_name \
@@ -214,8 +214,9 @@ impl Driver {
     }
 }
 
-/// The Columns view's Generated value of a column that cannot be written (generated,
-/// identity GENERATED ALWAYS).
+/// The Columns view's Generated value of a generated column; "identity" is one GENERATED
+/// ALWAYS AS IDENTITY (Postgres): neither takes a value in an INSERT, but an identity's values
+/// are the row's own (exports keep them).
 pub const GENERATED: &str = "generated";
 
 /// Pending grid edits of a table editor, by original row index.

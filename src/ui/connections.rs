@@ -59,6 +59,11 @@ impl AppView {
             let tables = c.tables.clone();
             return done(self, Ok(tables_json(&tables)), window, cx);
         }
+        // one connect at a time: a second Vault sign-in could not get the callback port
+        if c.status == ConnStatus::Connecting {
+            c.waiting.push(done);
+            return;
+        }
         c.status = ConnStatus::Connecting;
         self.status = if c.cfg.auth.is_vault() {
             format!(
@@ -83,8 +88,11 @@ impl AppView {
                 })
                 .await;
             let _ = this.update_in(cx, |v, window, cx| {
-                let Some(ix) = v.conn_ix(id) else { return };
+                let Some(ix) = v.conn_ix(id) else {
+                    return done(v, Err("connection is gone".into()), window, cx);
+                };
                 let c = &mut v.conns[ix];
+                let waiting = std::mem::take(&mut c.waiting);
                 let out = match res {
                     Ok((s, tables, canceller, version)) => {
                         c.session = Some(Arc::new(Mutex::new(s)));
@@ -114,6 +122,9 @@ impl AppView {
                     }
                 };
                 cx.notify();
+                for w in waiting {
+                    w(v, out.clone(), window, cx);
+                }
                 done(v, out, window, cx);
             });
         })

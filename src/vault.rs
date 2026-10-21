@@ -156,9 +156,10 @@ fn token_valid(addr: &str, token: &str) -> bool {
     )
 }
 
-/// A working token: session cache, VAULT_TOKEN, ~/.vault-token, else OIDC sign-in.
-fn token(c: &ConnConfig, addr: &str, open: &dyn Fn(&str)) -> Result<String, String> {
-    if let Some(t) = cached(addr).filter(|t| token_valid(addr, t)) {
+/// A working token other than `refused`: session cache, VAULT_TOKEN, ~/.vault-token, else
+/// OIDC sign-in.
+fn token(c: &ConnConfig, addr: &str, open: &dyn Fn(&str), refused: &str) -> Result<String, String> {
+    if let Some(t) = cached(addr).filter(|t| t != refused && token_valid(addr, t)) {
         return Ok(t);
     }
     let from_env = std::env::var("VAULT_TOKEN").ok();
@@ -168,7 +169,7 @@ fn token(c: &ConnConfig, addr: &str, open: &dyn Fn(&str)) -> Result<String, Stri
     for t in [from_env, from_file]
         .into_iter()
         .flatten()
-        .filter(|t| !t.is_empty())
+        .filter(|t| !t.is_empty() && t != refused)
     {
         if token_valid(addr, &t) {
             remember(addr, Some(t.clone()));
@@ -271,9 +272,19 @@ fn oidc_login(
         match listener.accept() {
             Ok((mut stream, _)) => {
                 let _ = stream.set_nonblocking(false);
+                // browsers open idle sockets ahead of time: never wait on one for long
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                let mut reader = BufReader::new(&stream);
                 let mut line = String::new();
-                if BufReader::new(&stream).read_line(&mut line).is_err() {
+                if reader.read_line(&mut line).is_err() {
                     continue;
+                }
+                // read the headers too: closing with them unread resets the connection
+                let mut header = String::new();
+                while reader.read_line(&mut header).is_ok_and(|n| n > 0)
+                    && !header.trim().is_empty()
+                {
+                    header.clear();
                 }
                 let target = line.split_whitespace().nth(1).unwrap_or("").to_string();
                 if !target.starts_with("/oidc/callback") {
@@ -380,12 +391,12 @@ pub fn resolve(c: &ConnConfig, open: &dyn Fn(&str)) -> Result<ConnConfig, String
         .filter(|a| !a.is_empty())
         .or_else(|| std::env::var("VAULT_ADDR").ok())
         .ok_or("no Vault address: enter it in the connection, or set VAULT_ADDR")?;
-    let mut tok = token(c, &addr, open)?;
+    let mut tok = token(c, &addr, open, "")?;
     let (mut status, mut v) = call(&addr, "GET", &path, Some(&tok), &[], None)?;
     if status == 403 {
-        // The token expired or lacks rights: sign in again once.
+        // The token expired or lacks rights: sign in again once, with another token.
         remember(&addr, None);
-        tok = token(c, &addr, open)?;
+        tok = token(c, &addr, open, &tok)?;
         (status, v) = call(&addr, "GET", &path, Some(&tok), &[], None)?;
     }
     if status != 200 {
@@ -393,6 +404,8 @@ pub fn resolve(c: &ConnConfig, open: &dyn Fn(&str)) -> Result<ConnConfig, String
     }
     let data = &v["data"];
     let mut out = c.clone();
+    // plain credentials now: resolving again (db::connect does) asks Vault no second time
+    out.auth = Auth::Password;
     match c.auth {
         Auth::VaultKv => {
             let f = match c.vault_field.trim() {
@@ -595,6 +608,7 @@ mod tests {
             (r.user.as_str(), r.password.as_str()),
             ("v-ro-123", "dyn-secret")
         );
+        assert_eq!(resolve(&r, &browser).unwrap().password, "dyn-secret"); // no 2nd lease
 
         let c = ConnConfig {
             auth: Auth::VaultKv,

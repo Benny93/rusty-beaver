@@ -342,6 +342,7 @@ impl AppView {
             server: None,
             in_tx: false,
             tx_statements: 0,
+            waiting: vec![],
         });
         self.selected = Some((id, None));
         self.save();

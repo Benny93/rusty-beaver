@@ -311,6 +311,8 @@ struct Conn {
     columns: Vec<(String, QueryResult)>,
     /// Tables and columns for SQL autocompletion.
     catalog: SharedCatalog,
+    /// Callers waiting for the connect in progress.
+    waiting: Vec<Done>,
 }
 
 /// What `run` executes.
@@ -525,6 +527,7 @@ impl AppView {
                 server: None,
                 in_tx: false,
                 tx_statements: 0,
+                waiting: vec![],
             })
             .collect();
         let next_id = conns.len() as u64 + 1;

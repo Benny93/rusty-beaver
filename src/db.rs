@@ -852,10 +852,11 @@ impl Session {
     ) -> Result<(Vec<crate::er::Table>, Vec<ForeignKey>), String> {
         let fks = self.foreign_keys()?;
         let mut tables = vec![];
-        for (name, kind) in self.tables()?.into_iter().take(limit) {
-            if kind == "VIEW" {
-                continue;
-            }
+        let shown = self
+            .tables()?
+            .into_iter()
+            .filter(|(_, kind)| kind != "VIEW");
+        for (name, _) in shown.take(limit) {
             let cols = self.query(&self.driver().columns_sql(&name))?;
             let columns = cols
                 .rows
@@ -2265,6 +2266,10 @@ mod tests {
             .unwrap();
         let d = s.foreign_keys().unwrap();
         assert_eq!(d.iter().find(|f| f.table == "d").unwrap().ref_table, "t");
+        // the diagram's table limit counts tables, not the views before them
+        s.query("CREATE VIEW a1 AS SELECT 1; CREATE VIEW a2 AS SELECT 1")
+            .unwrap();
+        assert_eq!(s.schema(2).unwrap().0.len(), 2);
         assert!(s.query("SELEC nope").is_err());
     }
 

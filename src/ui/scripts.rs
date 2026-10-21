@@ -175,6 +175,7 @@ impl AppView {
                 .position(|t| t.kind == TabKind::Sql)
                 .unwrap_or(0);
             self.status = format!("Restored {} tab(s) from the last session", self.tabs.len());
+            self.ensure_loaded(self.active, window, cx);
         }
     }
 

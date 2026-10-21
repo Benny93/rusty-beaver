@@ -46,6 +46,9 @@ def main():
     con.close()
     cfg = os.path.join(tmp, "connections.json")
     json.dump([{"name": DB, "driver": "sqlite", "database": db}], open(cfg, "w"))
+    # the last session: two table tabs, the first one active
+    json.dump({"scripts": [{"connection": DB, "table": "lodges"}, {"connection": DB, "table": "beavers"}]},
+              open(os.path.join(tmp, "s.json"), "w"))
     port = os.environ.get("SMOKE_PORT", "7880")
     mcp.URL = f"http://127.0.0.1:{port}/mcp"
     env = dict(os.environ, RUSTY_BEAVER_CONFIG=cfg, RUSTY_BEAVER_MCP_PORT=port, RUSTY_BEAVER_BACKGROUND="1", RUSTY_BEAVER_KEYCHAIN="off",
@@ -59,6 +62,18 @@ def main():
             except Exception:  # noqa: BLE001 - not up yet
                 time.sleep(0.1)
         q = lambda sql: sqlite3.connect(db).execute(sql).fetchall()  # noqa: E731
+
+        def restored_session():
+            for _ in range(30):  # the active restored tab loads by itself
+                r = call("get_results")
+                if r["row_count"]:
+                    break
+                time.sleep(0.1)
+            assert r["row_count"] == 4, r
+            tabs = call("get_state")["tabs"]
+            assert [t["active"] for t in tabs] == [True, False], tabs
+            call("close_tab", {"index": 1})
+            call("close_tab", {"index": 0})
 
         def navigator():
             tables = [t["name"] for t in call("connect", {"connection": DB})["tables"]]
@@ -280,7 +295,7 @@ def main():
             png = call("screenshot")
             assert png is not None
 
-        for name, fn in [("navigator + foreign keys", navigator), ("sql editor + scripts + errors", sql_editor),
+        for name, fn in [("restored session", restored_session), ("navigator + foreign keys", navigator), ("sql editor + scripts + errors", sql_editor),
                          ("parameters, format, explain, completion", params_format_explain), ("table editing, filter, ddl", table_editing),
                          ("manual commit, production + read-only safety", transactions_and_production), ("cancel", cancel),
                          ("export, import, views, er diagram, history", io_and_views)]:

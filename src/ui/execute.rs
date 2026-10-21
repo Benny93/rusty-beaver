@@ -515,11 +515,8 @@ impl AppView {
         let filter = t.filter.read(cx).value().to_string();
         let sql = driver.select_all(table, &filter, t.limit);
         // "x = 1 ORDER BY y" filters and sorts the page; count(*) with that ORDER BY fails on
-        // Postgres, so the total drops it (one outside quotes)
-        let cond = match filter.to_ascii_lowercase().rfind("order by") {
-            Some(at) if filter[..at].matches('\'').count() % 2 == 0 => &filter[..at],
-            _ => filter.as_str(),
-        };
+        // Postgres, so the total drops it
+        let (cond, _) = db::split_order(&filter);
         let count = format!(
             "SELECT count(*) FROM {}{};",
             driver.table_ref(table),

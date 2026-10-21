@@ -1516,6 +1516,15 @@ pub fn dollar_quote_end(sql: &str, i: usize) -> Option<usize> {
         .map(|j| i + n + 2 + j + tag.len())
 }
 
+/// A table filter split into its condition and a trailing `ORDER BY …` (outside quotes):
+/// "x = 1 ORDER BY y" -> ("x = 1 ", "ORDER BY y").
+pub fn split_order(filter: &str) -> (&str, &str) {
+    match filter.to_ascii_lowercase().rfind("order by") {
+        Some(at) if filter[..at].matches('\'').count().is_multiple_of(2) => filter.split_at(at),
+        _ => (filter, ""),
+    }
+}
+
 /// Byte range of the statement at `offset`: statements end at `;` or at a blank line,
 /// outside quotes and comments (DBeaver's "smart" delimiting). A cursor in the gap after a
 /// statement belongs to that statement.
@@ -2301,6 +2310,8 @@ mod tests {
             params("SELECT arr[2:n], arr[i:j] FROM t WHERE a = :id"),
             ["id"]
         );
+        assert_eq!(split_order("a = 1 order by b"), ("a = 1 ", "order by b"));
+        assert_eq!(split_order("a = 'order by'"), ("a = 'order by'", ""));
         let v: std::collections::HashMap<String, String> = [
             ("rank".to_string(), "'Private'".to_string()),
             ("min".into(), "3".into()),

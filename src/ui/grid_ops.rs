@@ -89,11 +89,15 @@ impl AppView {
                 };
                 let tab = &mut self.tabs[ix];
                 let old = tab.filter.read(cx).value().trim().to_string();
-                let filter = if old.is_empty() {
-                    cond
+                // a sort stays at the end: (x = 1 ORDER BY y) AND … is no SQL
+                let (old_cond, order) = db::split_order(&old);
+                let filter = if old_cond.trim().is_empty() {
+                    format!("{cond} {order}")
                 } else {
-                    format!("({old}) AND {cond}")
-                };
+                    format!("({}) AND {cond} {order}", old_cond.trim())
+                }
+                .trim()
+                .to_string();
                 tab.filter
                     .update(cx, |i, cx| i.set_value(filter.clone(), window, cx));
                 tab.limit = PAGE;

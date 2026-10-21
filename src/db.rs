@@ -1460,7 +1460,7 @@ fn writes(sql: &str, mysql: bool) -> bool {
     // Only as a statement's first word: "comment" and "lock" are column names too.
     const LEADING: &[&str] = &[
         "REPLACE", "COPY", "CALL", "DO", "LOAD", "VACUUM", "REINDEX", "CLUSTER", "COMMENT", "LOCK",
-        "IMPORT",
+        "IMPORT", "REFRESH", "ANALYZE", "OPTIMIZE", "REPAIR", "FLUSH",
     ];
     let b = sql.as_bytes();
     let mut i = 0;
@@ -2466,6 +2466,15 @@ mod tests {
         assert!(!is_write(r"SELECT 'a\', 'b' -- update"));
         assert!(is_write("SELECT * INTO newt FROM t"));
         assert!(!is_write("SELECT id, comment, lock FROM reviews")); // column names
+        for maintenance in [
+            "REFRESH MATERIALIZED VIEW mv",
+            "ANALYZE t",
+            "OPTIMIZE TABLE t",
+            "REPAIR TABLE t",
+            "FLUSH TABLES",
+        ] {
+            assert!(is_write(maintenance), "{maintenance}");
+        }
         assert!(is_write("SELECT 1; COMMENT ON TABLE t IS 'x'"));
     }
 

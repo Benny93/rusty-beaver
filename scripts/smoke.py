@@ -325,6 +325,9 @@ def main():
             call("run_sql", {"connection": DB, "sql": "SELECT name, logs_chewed FROM beavers"})
             assert call("chart", {})["value_columns"] == ["logs_chewed"]
             call("chart", {"on": False})
+            # a refused column leaves the chart as it was (off)
+            assert "numeric" in call("chart", {"on": True, "column": "nope"}, ok=False)
+            assert not [t for t in call("get_state")["tabs"] if t["active"]][0]["chart"]
             assert call("record_view", {"on": True, "row": 1})["record"]["name"]
             call("record_view", {"on": False})
             # switching the text view off needs no result to show

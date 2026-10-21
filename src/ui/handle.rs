@@ -462,10 +462,10 @@ impl AppView {
                 let r = match self.tabs.get_mut(self.active) {
                     None => Err("no tab open".to_string()),
                     Some(t) => {
-                        t.chart = a["on"].as_bool().unwrap_or(true);
                         let g = t.grid.read(cx).delegate();
                         let (label, numeric) = crate::grid::chart_columns(&g.shown()); // edits applied, deleted and searched-out rows left out
-                        t.chart_col = None; // no column: the first numeric one
+                        // the column first: a refused one changes nothing
+                        let mut col = None; // no column: the first numeric one
                         if let Some(name) = a["column"].as_str() {
                             let Some(c) =
                                 g.r.columns
@@ -476,8 +476,10 @@ impl AppView {
                                 let e = format!("{name:?} is no numeric column of the result");
                                 return now(self, Err(e), window, cx, done);
                             };
-                            t.chart_col = Some(c);
+                            col = Some(c);
                         }
+                        t.chart = a["on"].as_bool().unwrap_or(true);
+                        t.chart_col = col;
                         Ok(json!({
                             "chart": t.chart,
                             "label_column": label.map(|c| g.r.columns[c].clone()),
@@ -930,7 +932,7 @@ impl AppView {
                 json!({
                     "index": i, "title": t.title, "active": i == self.active, "connection": name(t.conn),
                     "kind": match &t.kind { TabKind::Sql => "sql".to_string(), TabKind::Table(n) => format!("table:{n}"), TabKind::Diagram => "er_diagram".to_string() },
-                    "view": format!("{:?}", t.view).to_lowercase(),
+                    "view": format!("{:?}", t.view).to_lowercase(), "chart": t.chart,
                     "sql": t.editor.read(cx).value().to_string(), "running": t.running,
                     "result": { "columns": r.columns, "rows": g.order.len() }, // as shown: a search hides some
                     "filter": t.filter.read(cx).value().to_string(),

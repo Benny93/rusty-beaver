@@ -135,6 +135,10 @@ fn aliases(text: &str) -> HashMap<String, String> {
         // "public"."users" -> public.users
         {
             out.insert(table.to_lowercase(), table.to_string());
+            // users.x FROM audit.users: audit's users, not another schema's of that name
+            if let Some((_, bare)) = table.split_once('.') {
+                out.entry(bare.to_lowercase()).or_insert(table.to_string());
+            }
             at += 1;
             if words.get(at).is_some_and(|n| n.eq_ignore_ascii_case("as")) {
                 at += 1;
@@ -381,5 +385,9 @@ mod tests {
         assert_eq!(s[0].label, "name"); // comma-separated FROM list
         let (start, s) = suggest("SELECT * FROM public.da", 23, &c);
         assert_eq!((start, s[0].label.as_str()), (21, "dams")); // schema.
+        let mut c2 = catalog();
+        c2.set_columns("audit.dams", vec![("changed".into(), "TIMESTAMP".into())]);
+        let (_, s) = suggest("SELECT dams.h FROM public.dams", 13, &c2);
+        assert_eq!(s[0].label, "height"); // public's dams, though audit.dams loaded last
     }
 }

@@ -113,28 +113,15 @@ impl AppView {
                 now(self, r, window, cx, done)
             }
             "run_sql" => {
-                if let Some(name) = a["connection"].as_str() {
-                    let id = match self.conn_by_name(name) {
-                        Ok(id) => id,
-                        Err(e) => return now(self, Err(e), window, cx, done),
-                    };
-                    // a script tab: a table tab's grid saves edits into its table
-                    let active_ok = self
-                        .tabs
-                        .get(self.active)
-                        .is_some_and(|t| t.conn == id && t.kind == TabKind::Sql);
-                    if !active_ok {
-                        match self
-                            .tabs
-                            .iter()
-                            .position(|t| t.conn == id && t.kind == TabKind::Sql)
-                        {
-                            Some(i) => self.active = i,
-                            None => {
-                                let _ = self.new_editor(Some(id), window, cx);
-                            }
-                        }
-                    }
+                let id = match a["connection"].as_str().map(|n| self.conn_by_name(n)) {
+                    Some(Err(e)) => return now(self, Err(e), window, cx, done),
+                    Some(Ok(id)) => Some(id),
+                    None => self.tabs.get(self.active).map(|t| t.conn),
+                };
+                if let Some(id) = id
+                    && let Err(e) = self.activate_script_tab(id, window, cx)
+                {
+                    return now(self, Err(e), window, cx, done);
                 }
                 if self.tabs.is_empty()
                     && let Err(e) = self.new_editor(None, window, cx)

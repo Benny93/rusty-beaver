@@ -586,6 +586,28 @@ impl AppView {
         self.tabs.iter().position(|t| t.grid.entity_id() == key)
     }
 
+    /// Make a script tab of connection `id` active (the active tab if it is one). SQL other
+    /// than its own SELECT never runs in a table tab: its grid saves edits into the table.
+    fn activate_script_tab(
+        &mut self,
+        id: u64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<usize, String> {
+        let script = |t: &EditorTab| t.conn == id && t.kind == TabKind::Sql;
+        if self.tabs.get(self.active).is_some_and(script) {
+            return Ok(self.active);
+        }
+        match self.tabs.iter().position(script) {
+            Some(i) => {
+                self.active = i;
+                cx.notify();
+                Ok(i)
+            }
+            None => self.new_editor(Some(id), window, cx),
+        }
+    }
+
     fn conn_ix(&self, id: u64) -> Option<usize> {
         self.conns.iter().position(|c| c.id == id)
     }

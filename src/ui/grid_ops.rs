@@ -270,6 +270,11 @@ impl AppView {
                 Ok(Some("Changes reverted".into()))
             }
             GridOp::Save => {
+                // used up by this save, also when it stops early (see `run`)
+                let (confirmed, agent) = (t.confirmed, t.agent);
+                (self.tabs[ix].confirmed, self.tabs[ix].agent) = (false, false);
+                let t = &self.tabs[ix];
+                let g = grid.read(cx).delegate();
                 let key: Vec<usize> = t
                     .key
                     .iter()
@@ -299,8 +304,6 @@ impl AppView {
                     done(self, Err(e.clone()), window, cx);
                     return Err(e);
                 }
-                let (confirmed, agent) = (t.confirmed, t.agent);
-                (self.tabs[ix].confirmed, self.tabs[ix].agent) = (false, false);
                 if !confirmed
                     && let Some(name) = self
                         .conn_ix(conn)

@@ -28,6 +28,22 @@ impl AppView {
             return done(self, Err("no such tab".into()), window, cx);
         };
         let key = t.grid.entity_id();
+        // One run uses up an agent's confirm and params, also when it stops early: a leftover
+        // confirm would let the user's next write skip the production prompt.
+        let (confirmed, agent, given) = (
+            std::mem::take(&mut t.confirmed),
+            std::mem::take(&mut t.agent),
+            std::mem::take(&mut t.params_given),
+        );
+        if t.running {
+            // it would wait for the lock, and the first one's end would clear `running`
+            return done(
+                self,
+                Err("a query is already running in this tab: wait or cancel it".into()),
+                window,
+                cx,
+            );
+        }
         let raw = matches!(src, Source::Raw(_));
         let sql = match src {
             Source::Given(sql) => {
@@ -52,12 +68,14 @@ impl AppView {
             return done(self, Err("the editor is empty".into()), window, cx);
         }
         // :name parameters: values from the agent (params_given), else ask in a dialog.
-        let given = std::mem::take(&mut t.params_given);
         let names = if raw { vec![] } else { db::params(&sql) };
         if !names.is_empty() {
             if given {
                 return match db::bind(&sql, &t.param_values) {
-                    Ok(bound) => self.run(tab, Source::Raw(bound), max_rows, window, cx, done),
+                    Ok(bound) => {
+                        (t.confirmed, t.agent) = (confirmed, agent); // for the bound run
+                        self.run(tab, Source::Raw(bound), max_rows, window, cx, done)
+                    }
                     Err(e) => done(
                         self,
                         Err(format!("{e} (pass params: {{{}}})", names.join(", "))),
@@ -98,10 +116,6 @@ impl AppView {
             return;
         }
         // Production: changing data needs a yes (the dialog, or `confirm` from an agent).
-        let (confirmed, agent) = (
-            std::mem::take(&mut t.confirmed),
-            std::mem::take(&mut t.agent),
-        );
         let conn = t.conn;
         if db::is_write(&sql)
             && let Some(name) = self
@@ -338,6 +352,17 @@ impl AppView {
     ) {
         let Some(sql) = sql.or_else(|| self.current_statement(tab, cx)) else {
             return done(self, Err("nothing to explain".into()), window, cx);
+        };
+        let Some(t) = self.tabs.get(tab) else {
+            return done(self, Err("no such tab".into()), window, cx);
+        };
+        // the plan goes to a script tab, never into a table tab's editable grid
+        let tab = match t.kind {
+            TabKind::Sql => tab,
+            _ => match self.activate_script_tab(t.conn, window, cx) {
+                Ok(i) => i,
+                Err(e) => return done(self, Err(e), window, cx),
+            },
         };
         let Some(t) = self.tabs.get(tab) else {
             return done(self, Err("no such tab".into()), window, cx);

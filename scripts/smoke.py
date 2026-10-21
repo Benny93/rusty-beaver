@@ -93,6 +93,10 @@ def main():
             assert q("SELECT river FROM lodges WHERE id = 1") == [("Yukon River",)]
             assert q("SELECT count(*) FROM lodges") == [(5,)]
             assert call("set_filter", {"filter": "river = 'Elbe'"})["row_count"] == 1
+            call("explain")  # the plan opens in a script tab, not in the editable table grid
+            active = [t for t in call("get_state")["tabs"] if t["active"]]
+            assert active[0]["title"].startswith("Script-"), active
+            call("open_table", {"connection": DB, "table": "lodges"})
             call("open_table", {"connection": DB, "table": "missions"})
             assert "beavers" in call("open_referenced_row", {"row": 0, "column": "leader_id"})["ok"]
             for _ in range(50):  # the referenced table loads in the background

@@ -158,6 +158,25 @@ fn lex(sql: &str, mysql: bool) -> Vec<Tok<'_>> {
                 i = crate::db::dollar_quote_end(sql, i).unwrap_or(b.len());
                 out.push(Tok::Raw(&sql[start..i]));
             }
+            // @@version, @a (MySQL variables), $id, @id, ?1 (SQLite parameters): one piece
+            b'@' | b'$' | b'?'
+                if {
+                    let n = if c == b'@' && b.get(i + 1) == Some(&b'@') {
+                        i + 2
+                    } else {
+                        i + 1
+                    };
+                    b.get(n)
+                        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'_')
+                } =>
+            {
+                i += 1;
+                while i < b.len() && (b[i] == b'@' || b[i].is_ascii_alphanumeric() || b[i] == b'_')
+                {
+                    i += 1;
+                }
+                out.push(Tok::Raw(&sql[start..i]));
+            }
             // MySQL # comments too; on Postgres (#> and #- operators) the rest of the line is
             // only kept as it is
             b'#' | b'-' if c == b'#' || b.get(i + 1) == Some(&b'-') => {
@@ -455,6 +474,14 @@ mod tests {
         assert!(half.contains(".5,") && half.contains(".25"), "{half}"); // numbers stay whole
         assert!(!half.contains(". 5") && !half.contains(". 25"), "{half}");
         assert!(format_sql("select a=äb from t").contains("a = äb"));
+        // variables and parameters stay one piece: @@version, @a, SQLite's $id, @id, ?1
+        let v = super::format_sql_as("select @@version, @a := 1 from t", true);
+        assert!(v.contains("@@version") && v.contains("@a :="), "{v}");
+        let p = format_sql("select * from t where a = @id or b = $id or c = ?1");
+        assert!(
+            p.contains("@id") && p.contains("$id") && p.contains("?1"),
+            "{p}"
+        );
         // MySQL refuses CAST (…) with a space (ERROR 1064)
         assert!(format_sql("select cast(x as char) from t").contains("CAST(x AS char)"));
         assert!(

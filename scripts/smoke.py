@@ -302,6 +302,10 @@ def main():
             call("chart", {"on": False})
             assert call("record_view", {"on": True, "row": 1})["record"]["name"]
             call("record_view", {"on": False})
+            # switching the text view off needs no result to show
+            call("run_sql", {"connection": DB, "sql": "CREATE TABLE z(a)"})
+            assert call("results_as_text", {"on": False})["text_view"] is False
+            call("run_sql", {"connection": DB, "sql": "DROP TABLE z"})
             # a selected row that a search hid: the record the form shows (its last row)
             call("run_sql", {"connection": DB, "sql": "SELECT 1 AS a UNION ALL SELECT 2 UNION ALL SELECT 3"})
             call("record_view", {"on": True, "row": 2})

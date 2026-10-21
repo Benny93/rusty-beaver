@@ -488,12 +488,18 @@ impl AppView {
             }
             "results_as_text" => {
                 let on = a["on"].as_bool().unwrap_or(true);
-                if let Some(t) = self.tabs.get_mut(self.active) {
-                    t.text_view = on;
-                }
-                let r = self
-                    .export_text("txt", cx)
-                    .map(|(text, _)| json!({ "text_view": on, "text": text }));
+                // the text first: a failed call leaves the view as it was; off needs none
+                let text = if on {
+                    self.export_text("txt", cx).map(|(text, _)| Some(text))
+                } else {
+                    Ok(None)
+                };
+                let r = text.map(|text| {
+                    if let Some(t) = self.tabs.get_mut(self.active) {
+                        t.text_view = on;
+                    }
+                    json!({ "text_view": on, "text": text })
+                });
                 now(self, r, window, cx, done)
             }
             "duplicate_row" | "open_referenced_row" => {

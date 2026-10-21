@@ -720,11 +720,12 @@ impl AppView {
         let (text, rows) = self.export_text(&ext, cx)?;
         db::write_atomic(path, text).map_err(|e| format!("{}: {e}", path.display()))?;
         // A table tab holds one page: say so when the table has more rows.
-        let total = self
-            .tabs
-            .get(self.active)
-            .and_then(|t| t.total)
-            .filter(|&n| n as usize > rows);
+        // (rows loaded from the table, not shown: a row marked for deletion was loaded)
+        let total = self.tabs.get(self.active).and_then(|t| {
+            let g = t.grid.read(cx).delegate();
+            let loaded = g.r.rows.len() - g.changes.inserted.len();
+            t.total.filter(|&n| n as usize > loaded)
+        });
         let msg = match total {
             Some(n) => format!(
                 "Exported {rows} of {n} rows (the loaded pages) to {}; Load more first, or export a SELECT",

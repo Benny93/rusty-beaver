@@ -152,6 +152,12 @@ def main():
             ddl = call("set_table_view", {"view": "ddl"})["ddl"]
             assert ddl.startswith("CREATE TABLE lodges"), ddl
             call("set_table_view", {"view": "data"})
+            # a row marked for deletion is no row "not loaded yet"
+            call("open_table", {"connection": DB, "table": "lodges"})
+            call("delete_row", {"row": 0})
+            out = call("export_csv", {"path": os.path.join(tmp, "del.csv")})["ok"]
+            assert "Load more" not in out, out
+            call("revert_changes")
             # a row added and deleted again is no change, also in the reply
             call("open_table", {"connection": DB, "table": "lodges"})
             call("add_row", {"values": {"name": "Gone"}})

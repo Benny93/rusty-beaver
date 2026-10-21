@@ -420,6 +420,8 @@ impl AppView {
         // EXPLAIN a; b would run b: one statement only
         let one = sql.trim().trim_end_matches(';');
         if db::statement_at(one, 0, driver == Driver::Mysql).end < one.trim_end().len() {
+            self.status = "Explain one statement at a time: select it".into(); // Mod+Shift+E
+            cx.notify();
             return done(
                 self,
                 Err("explain one statement at a time".into()),

@@ -909,6 +909,8 @@ fn pg_config(c: &ConnConfig) -> postgres::Config {
         cfg.dbname(&c.database);
     }
     cfg.ssl_mode(match c.ssl {
+        // a Unix socket (host /var/run/postgresql) has no TLS; libpq ignores sslmode there
+        _ if c.host.starts_with('/') => postgres::config::SslMode::Disable,
         Ssl::Disable => postgres::config::SslMode::Disable,
         Ssl::Prefer => postgres::config::SslMode::Prefer,
         Ssl::Require | Ssl::VerifyFull => postgres::config::SslMode::Require,
@@ -918,11 +920,12 @@ fn pg_config(c: &ConnConfig) -> postgres::Config {
 
 /// The CAs the OS trusts, as a PEM file: the MySQL driver checks certificates only against its
 /// bundled public CAs plus such a file, so company CAs installed on the machine work too.
+/// Written on every use into the user's own config dir (not a shared, cleaned-up temp dir
+/// where another user could swap the CAs).
 fn os_roots_pem() -> Result<std::path::PathBuf, String> {
     use base64::Engine as _;
-    static PEM: std::sync::OnceLock<Result<std::path::PathBuf, String>> =
-        std::sync::OnceLock::new();
-    PEM.get_or_init(|| {
+    static PEM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let pem = PEM.get_or_init(|| {
         let mut out = String::new();
         let mut check = rustls::RootCertStore::empty();
         for cert in rustls_native_certs::load_native_certs().certs {
@@ -937,11 +940,14 @@ fn os_roots_pem() -> Result<std::path::PathBuf, String> {
                 out.push_str("-----END CERTIFICATE-----\n");
             }
         }
-        let path = std::env::temp_dir().join("rusty-beaver-os-roots.pem");
-        std::fs::write(&path, out).map_err(|e| format!("system CAs: {e}"))?;
-        Ok(path)
-    })
-    .clone()
+        out
+    });
+    let dir = config_dir();
+    let path = dir.join("os-roots.pem");
+    std::fs::create_dir_all(&dir)
+        .and_then(|_| write_atomic(&path, pem))
+        .map_err(|e| format!("system CAs: {}: {e}", path.display()))?;
+    Ok(path)
 }
 
 /// rustls for Postgres: with `verify`, the OS trust store checks the certificate; without, like
@@ -2168,6 +2174,12 @@ mod tests {
         );
         c.database = "postgres".into();
         assert_eq!(pg_config(&c).get_dbname(), Some("postgres"));
+        c.host = "/var/run/postgresql".into();
+        c.ssl = Ssl::Require;
+        assert_eq!(
+            pg_config(&c).get_ssl_mode(),
+            postgres::config::SslMode::Disable
+        );
     }
 
     #[test]

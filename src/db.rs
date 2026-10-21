@@ -1530,6 +1530,7 @@ fn param_spans(sql: &str) -> Vec<(std::ops::Range<usize>, String)> {
                 while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
                     i += 1;
                 }
+                i += 1; // past the / too: in */* the * opens no comment
             }
             b'$' => {
                 if let Some(end) = dollar_quote_end(sql, i) {
@@ -1627,6 +1628,7 @@ fn writes(sql: &str, mysql: bool) -> bool {
                 while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
                     i += 1;
                 }
+                i += 1; // past the / too: in */* the * opens no comment
             }
             b'$' => {
                 if let Some(end) = dollar_quote_end(sql, i) {
@@ -2784,6 +2786,8 @@ mod tests {
         assert!(is_write("SELECT 1--1; DROP TABLE t"));
         assert!(is_write("SELECT 1 /*!50000 ; DROP TABLE t */"));
         assert!(!is_write("SELECT 1 /* ; DROP TABLE t */"));
+        // the comment ends at */, also when * follows it
+        assert!(is_write("SELECT /* cols */* FROM t; DELETE FROM t"));
         assert!(!is_write("EXPLAIN SELECT * FROM updates_log"));
         assert!(is_write("REPLACE INTO t VALUES (1)"));
         assert!(is_write("SELECT $a$'$a$; DELETE FROM t; --'"));
@@ -2848,6 +2852,7 @@ mod tests {
             "SELECT ':skip', x::int FROM t -- :nope\nWHERE a = :rank AND b > :min AND c = :rank";
         assert_eq!(params(sql), ["rank", "min"]);
         assert_eq!(params("SELECT $$it's :no$$, :id"), ["id"]);
+        assert_eq!(params("SELECT /**/* FROM t WHERE id = :id"), ["id"]);
         // E'' strings take backslash escapes (Postgres)
         assert_eq!(params(r"SELECT E'it\'s :no', :id"), ["id"]);
         assert_eq!(

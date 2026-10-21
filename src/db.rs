@@ -1517,6 +1517,8 @@ fn writes(sql: &str, mysql: bool) -> bool {
     let mut i = 0;
     let mut first = true;
     let (mut prev, mut pragma) = ("", false);
+    // EXPLAIN UPDATE … only plans it; EXPLAIN ANALYZE runs it
+    let mut explain = false;
     while i < b.len() {
         match b[i] {
             b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
@@ -1537,7 +1539,7 @@ fn writes(sql: &str, mysql: bool) -> bool {
                     continue;
                 }
             }
-            b';' => (first, pragma) = (true, false),
+            b';' => (first, pragma, explain) = (true, false, false),
             // PRAGMA user_version = 9 changes the file; PRAGMA table_info(t) only reads
             b'=' if pragma => return true,
             c if c.is_ascii_alphabetic() => {
@@ -1547,6 +1549,15 @@ fn writes(sql: &str, mysql: bool) -> bool {
                 }
                 let word = &sql[start..i];
                 let is = |list: &[&str]| list.iter().any(|w| w.eq_ignore_ascii_case(word));
+                if first && word.eq_ignore_ascii_case("EXPLAIN") {
+                    explain = true;
+                } else if explain && word.eq_ignore_ascii_case("ANALYZE") {
+                    explain = false;
+                }
+                if explain && !first {
+                    (first, prev) = (false, word);
+                    continue;
+                }
                 if is(WRITES)
                     || first && is(LEADING)
                     || is(UNLOCKS)
@@ -2619,6 +2630,15 @@ mod tests {
             assert!(is_write(unlock), "{unlock}");
         }
         assert!(!is_write("PRAGMA table_info(t)") && !is_write("SET search_path = app"));
+        assert!(
+            !is_write("EXPLAIN UPDATE t SET a = 1")
+                && !is_write("EXPLAIN QUERY PLAN DELETE FROM t")
+        );
+        assert!(
+            is_write("EXPLAIN ANALYZE DELETE FROM t")
+                && is_write("EXPLAIN (ANALYZE) DELETE FROM t")
+        );
+        assert!(is_write("EXPLAIN SELECT 1; DELETE FROM t"));
         for maintenance in [
             "REFRESH MATERIALIZED VIEW mv",
             "ANALYZE t",

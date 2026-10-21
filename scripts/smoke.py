@@ -189,6 +189,7 @@ def main():
             assert q("SELECT count(*) FROM lodges WHERE name = 'Prod Lodge'") == [(0,)]
             call("edit_connection", {"connection": DB, "production": False, "read_only": True})
             assert "read-only" in call("run_sql", {"connection": DB, "sql": "DELETE FROM missions", "confirm": True}, ok=False)
+            assert call("explain", {"sql": "UPDATE missions SET id = id"})["row_count"] >= 1  # plans only
             assert q("SELECT count(*) FROM missions") == [(5,)]
             call("edit_connection", {"connection": DB, "read_only": False})
 

@@ -160,9 +160,9 @@ impl AppView {
                             .ghost()
                             .xsmall()
                             .icon(IconName::X)
-                            .on_click(cx.listener(move |v, _, _, cx| {
+                            .on_click(cx.listener(move |v, _, w, cx| {
                                 cx.stop_propagation();
-                                let _ = v.close_tab(i, cx);
+                                let _ = v.close_tab(i, w, cx);
                             })),
                     )
             }))
@@ -382,10 +382,9 @@ impl AppView {
                         })),
                 )
                 .when(tab.text_view, |d| {
-                    let text = self
-                        .export_text("txt", cx)
-                        .map(|(t, _)| t)
-                        .unwrap_or_default();
+                    // the text view's editor holds it: rendering it twice per frame is slow
+                    // ponytail: the body still re-renders it each frame; cache when it shows
+                    let text = tab.text.read(cx).value().to_string();
                     d.child(self.copy_button("copy-text-view", text, cx))
                 })
                 .child(

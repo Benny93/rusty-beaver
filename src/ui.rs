@@ -888,7 +888,12 @@ impl AppView {
     }
 
     /// Refused (with the reason in the status bar) for a tab with unsaved grid edits.
-    fn close_tab(&mut self, i: usize, cx: &mut Context<Self>) -> Result<(), String> {
+    fn close_tab(
+        &mut self,
+        i: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Result<(), String> {
         self.unsaved_edits([i], cx)?;
         if i < self.tabs.len() {
             self.save_session_soon(cx);
@@ -897,6 +902,7 @@ impl AppView {
             if i < self.active || self.active >= self.tabs.len() {
                 self.active = self.active.saturating_sub(1);
             }
+            self.ensure_loaded(self.active, window, cx); // a restored tab not shown yet
             cx.notify();
         }
         Ok(())
@@ -1244,8 +1250,8 @@ impl Render for AppView {
                 }
             }))
             .on_action(cx.listener(|v, _: &NewConnection, w, cx| v.open_dialog(None, w, cx)))
-            .on_action(cx.listener(|v, _: &CloseTab, _, cx| {
-                let _ = v.close_tab(v.active, cx);
+            .on_action(cx.listener(|v, _: &CloseTab, w, cx| {
+                let _ = v.close_tab(v.active, w, cx);
             }))
             .on_action(cx.listener(|v, _: &ToggleTheme, w, cx| v.set_theme(!v.dark, w, cx)))
             .on_action(cx.listener(|v, _: &CopyValue, w, cx| v.report(GridOp::CopyValue, w, cx)))

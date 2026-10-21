@@ -180,7 +180,7 @@ impl AppView {
                         self.select_tab_ix(i, window, cx);
                         Ok(())
                     } else {
-                        self.close_tab(i, cx)
+                        self.close_tab(i, window, cx)
                     }
                     .map(|_| json!({ "active": self.active, "tabs": self.tabs.len() }))
                 };

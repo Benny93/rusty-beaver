@@ -382,6 +382,7 @@ impl AppView {
         }
         self.save();
         self.save_session_soon(cx);
+        self.ensure_loaded(self.active, window, cx); // a restored tab not shown yet
         // Callers waiting for its connect get an answer, once it is gone: earlier, one could
         // queue itself again on the connection.
         for w in waiting {
@@ -673,6 +674,9 @@ impl AppView {
                                             let Some(cfg) = v.dialog_config(cx) else {
                                                 return;
                                             };
+                                            // this dialog, not one opened after it closed
+                                            let this_dialog =
+                                                v.dialog.as_ref().map(|d| d.name.entity_id());
                                             if let Some(d) = v.dialog.as_mut() {
                                                 d.testing = true;
                                             }
@@ -690,7 +694,9 @@ impl AppView {
                                                     })
                                                     .await;
                                                 let _ = this.update(cx, |v, cx| {
-                                                    if let Some(d) = v.dialog.as_mut() {
+                                                    if let Some(d) = v.dialog.as_mut().filter(|d| {
+                                                        Some(d.name.entity_id()) == this_dialog
+                                                    }) {
                                                         (d.test, d.testing) = (Some(r), false);
                                                     }
                                                     cx.notify();

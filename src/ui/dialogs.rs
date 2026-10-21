@@ -238,6 +238,32 @@ impl AppView {
         Ok(())
     }
 
+    /// The dialog's port: empty is the driver's default, anything else must be 1-65535 (it
+    /// used to become the default silently, connecting somewhere else than typed).
+    fn dialog_port(&self, cx: &App) -> Result<u16, String> {
+        let d = self.dialog.as_ref().ok_or("no dialog")?;
+        let s = d.port.read(cx).value().trim().to_string();
+        if s.is_empty() || d.driver == Driver::Sqlite {
+            return Ok(d.driver.default_port());
+        }
+        s.parse::<u16>()
+            .ok()
+            .filter(|&p| p != 0)
+            .ok_or(format!("Port: {s:?} is not a number from 1 to 65535"))
+    }
+
+    /// `dialog_config`, or why not: shown in the dialog.
+    fn checked_dialog_config(&mut self, cx: &mut Context<Self>) -> Option<ConnConfig> {
+        if let Err(e) = self.dialog_port(cx) {
+            if let Some(d) = self.dialog.as_mut() {
+                d.test = Some(Err(e));
+            }
+            cx.notify();
+            return None;
+        }
+        self.dialog_config(cx)
+    }
+
     pub(super) fn dialog_config(&self, cx: &App) -> Option<ConnConfig> {
         let d = self.dialog.as_ref()?;
         let v = |e: &Entity<InputState>| e.read(cx).value().trim().to_string();
@@ -267,7 +293,7 @@ impl AppView {
             name,
             driver: d.driver,
             host: v(&d.host),
-            port: v(&d.port).parse().unwrap_or(d.driver.default_port()),
+            port: self.dialog_port(cx).unwrap_or(d.driver.default_port()),
             database,
             // Each mode keeps only its own fields.
             user: if d.auth == Auth::VaultDynamic || sqlite {
@@ -671,7 +697,7 @@ impl AppView {
                                         .loading(d.testing)
                                         .label("Test Connection")
                                         .on_click(cx.listener(|v, _, w, cx| {
-                                            let Some(cfg) = v.dialog_config(cx) else {
+                                            let Some(cfg) = v.checked_dialog_config(cx) else {
                                                 return;
                                             };
                                             // this dialog, not one opened after it closed
@@ -715,7 +741,7 @@ impl AppView {
                                 ))
                                 .child(Button::new("dlg-save").primary().label("Finish").on_click(
                                     cx.listener(|v, _, w, cx| {
-                                        let Some(cfg) = v.dialog_config(cx) else {
+                                        let Some(cfg) = v.checked_dialog_config(cx) else {
                                             return;
                                         };
                                         if let Some(id) = v.dialog.as_ref().and_then(|d| d.editing)

@@ -1230,7 +1230,12 @@ fn mysql_query(c: &mut mysql::Conn, sql: &str) -> Result<Vec<QueryResult>, Strin
             let cells = (0..row.len())
                 .map(|i| match row.as_ref(i) {
                     None | Some(V::NULL) => None,
-                    Some(V::Bytes(b)) => Some(String::from_utf8_lossy(b).into_owned()),
+                    // binary that is no text: SQLite's placeholder, so nothing writes the
+                    // replacement characters back (see is_blob_text)
+                    Some(V::Bytes(b)) => Some(match std::str::from_utf8(b) {
+                        Ok(t) => t.to_string(),
+                        Err(_) => format!("[BLOB {} bytes]", b.len()),
+                    }),
                     Some(V::Int(v)) => Some(v.to_string()),
                     Some(V::UInt(v)) => Some(v.to_string()),
                     Some(V::Float(v)) => Some(v.to_string()),

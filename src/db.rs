@@ -2044,7 +2044,8 @@ pub fn csv_text(bytes: Vec<u8>) -> Result<String, String> {
 }
 
 /// INSERT statements for CSV text whose header row names the table's columns.
-/// Empty fields and NULL become SQL NULL; quoted ("", "NULL") they are text.
+/// Empty fields ("" too: files that quote every field write a missing value so) and a bare
+/// NULL become SQL NULL; a quoted "NULL" is text.
 pub fn csv_inserts(driver: Driver, table: &str, text: &str) -> Result<Vec<String>, String> {
     let mut rows = csv_fields(text).into_iter();
     let header = rows.next().ok_or("the file is empty")?;
@@ -2066,7 +2067,7 @@ pub fn csv_inserts(driver: Driver, table: &str, text: &str) -> Result<Vec<String
             let vals = r
                 .iter()
                 .map(|(v, quoted)| {
-                    if !quoted && (v.is_empty() || v == "NULL") {
+                    if v.is_empty() || !quoted && v == "NULL" {
                         "NULL".into()
                     } else {
                         driver.literal(v)
@@ -2084,8 +2085,8 @@ pub fn csv_inserts(driver: Driver, table: &str, text: &str) -> Result<Vec<String
 
 /// RFC 4180 CSV.
 pub fn to_csv(r: &QueryResult) -> String {
-    // NULL is a bare NULL, as the import reads it; an empty text and the text 'NULL' are
-    // quoted so they stay text (and "" keeps a one-column row from reading as a blank line)
+    // NULL is a bare NULL, as the import reads it; the text 'NULL' is quoted so it stays text
+    // ("" keeps a one-column row from reading as a blank line; an empty text imports as NULL)
     let cell = |v: Option<&str>| match v {
         None => "NULL".to_string(),
         Some(s) if s.contains([',', ';', '\t', '"', '\n', '\r']) || s.is_empty() || s == "NULL" => {
@@ -2249,7 +2250,7 @@ mod tests {
     }
 
     #[test]
-    fn csv_keeps_empty_text_and_text_null_apart_from_null() {
+    fn csv_keeps_text_null_apart_from_null() {
         let mut s = Session::Sqlite(rusqlite::Connection::open_in_memory().unwrap());
         s.query("CREATE TABLE t(id INT, v TEXT)").unwrap();
         let r = QueryResult {
@@ -2264,13 +2265,18 @@ mod tests {
         s.apply(&csv_inserts(Driver::Sqlite, "t", &to_csv(&r)).unwrap())
             .unwrap();
         let back = s.query("SELECT v FROM t ORDER BY id").unwrap().rows;
+        // "" is NULL, as files that quote every field write a missing value
         assert_eq!(
             back,
-            [
-                vec![Some("".to_string())],
-                vec![Some("NULL".into())],
-                vec![None]
-            ]
+            [vec![None], vec![Some("NULL".to_string())], vec![None]]
+        );
+        s.query("DELETE FROM t").unwrap();
+        let quote_all = "\"id\",\"v\"\n\"4\",\"\"\n";
+        s.apply(&csv_inserts(Driver::Sqlite, "t", quote_all).unwrap())
+            .unwrap();
+        assert_eq!(
+            s.query("SELECT v FROM t").unwrap().rows,
+            [vec![None::<String>]]
         );
     }
 

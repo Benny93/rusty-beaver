@@ -230,8 +230,25 @@ pub fn column_stats(g: &Grid, col: usize) -> Vec<(&'static str, String)> {
                 s.to_string()
             }
         };
-        out.push(("min", present.iter().min().map(short).unwrap_or_default()));
-        out.push(("max", present.iter().max().map(short).unwrap_or_default()));
+        // in the order the column sorts by (numbers by value before text, case ignored)
+        let by_sort =
+            |a: &&&String, b: &&&String| compare(&Some((**a).clone()), &Some((**b).clone()));
+        out.push((
+            "min",
+            present
+                .iter()
+                .min_by(by_sort)
+                .map(short)
+                .unwrap_or_default(),
+        ));
+        out.push((
+            "max",
+            present
+                .iter()
+                .max_by(by_sort)
+                .map(short)
+                .unwrap_or_default(),
+        ));
     }
     out
 }
@@ -359,6 +376,14 @@ mod tests {
                 ("max", "b".into())
             ]
         );
+        // mixed values: min and max as the column sorts (9 < 10 < text, case ignored)
+        g.set(QueryResult {
+            columns: vec!["m".into()],
+            rows: cells(vec![vec!["10"], vec!["abc"], vec!["9"], vec!["Banana"]]),
+            ..Default::default()
+        });
+        let m = column_stats(&g, 0);
+        assert_eq!(m[3..], [("min", "9".to_string()), ("max", "Banana".into())]);
     }
 
     #[test]

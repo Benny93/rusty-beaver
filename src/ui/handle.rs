@@ -736,7 +736,7 @@ impl AppView {
                 now(self, Ok(r), window, cx, done)
             }
             "get_history" => {
-                let q = s("search").to_lowercase();
+                let q = s("search").trim().to_lowercase();
                 let limit = a["limit"].as_u64().unwrap_or(20) as usize;
                 let now_s = history::now();
                 let items: Vec<Value> = self

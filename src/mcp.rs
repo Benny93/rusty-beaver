@@ -933,7 +933,7 @@ impl ServerHandler for Tools {
             "Drives the Rusty Beaver database tool (a DBeaver clone) the user is looking at; every tool changes what they see. \
              Start with get_state, then connect / describe_table / open_table / run_sql; screenshot shows the window. \
              Table tabs edit data: edit_cell / add_row / delete_row, then save_changes (one transaction). \
-             Connections marked production need confirm: true for data-changing SQL and saves; read-only ones refuse them. \
+             Connections marked production need confirm: true for data-changing SQL, saves and CSV imports; read-only ones refuse them. \
              Manual-commit connections keep a transaction open until commit / rollback."
                 .into(),
         );

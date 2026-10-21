@@ -202,6 +202,10 @@ fn in_literal(s: &str, mysql: bool) -> bool {
                     i += n + 1;
                 }
             }
+            // a closed $$ … $$ body: its ' are no strings (an open one is typed into: SQL)
+            b'$' if crate::db::dollar_quote_end(s, i).is_some() => {
+                i = crate::db::dollar_quote_end(s, i).unwrap_or(b.len()) - 1;
+            }
             b'#' if mysql => match s[i..].find('\n') {
                 Some(n) => i += n,
                 None => return true,
@@ -621,6 +625,7 @@ mod tests {
             "SELECT \"Bob's\" FROM beavers WHERE na",
             "SELECT 1 # don't\nFROM beavers WHERE na",
             "SELECT 'C:\\' AS p, na",
+            "SELECT $$it's$$ AS s, na",
         ] {
             assert!(!suggest(text, text.len(), &c).1.is_empty(), "{text}");
         }

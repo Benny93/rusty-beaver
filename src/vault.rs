@@ -65,16 +65,21 @@ fn parse_ref(r: &str) -> Result<(String, Option<String>), String> {
 /// Tokens of this session, per Vault address.
 static TOKENS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
+/// The cache key of a Vault address: https://vault:8200/ and https://vault:8200 are one Vault.
+fn key(addr: &str) -> String {
+    addr.trim().trim_end_matches('/').to_string()
+}
+
 fn cached(addr: &str) -> Option<String> {
-    TOKENS.lock().unwrap().as_ref()?.get(addr).cloned()
+    TOKENS.lock().unwrap().as_ref()?.get(&key(addr)).cloned()
 }
 
 fn remember(addr: &str, token: Option<String>) {
     let mut t = TOKENS.lock().unwrap();
     let map = t.get_or_insert_with(HashMap::new);
     match token {
-        Some(tok) => map.insert(addr.to_string(), tok),
-        None => map.remove(addr),
+        Some(tok) => map.insert(key(addr), tok),
+        None => map.remove(&key(addr)),
     };
 }
 
@@ -476,6 +481,9 @@ mod tests {
 
     #[test]
     fn references_and_query_strings() {
+        // one Vault, one cached token, with or without the trailing slash
+        remember("http://cache-key.test:8200/", Some("t1".into()));
+        assert_eq!(cached("http://cache-key.test:8200").as_deref(), Some("t1"));
         assert_eq!(decode("a%+5b%2Fc"), "a% 5b/c"); // %+5 is no escape (+ is a space)
         assert!(parse_ref("vault:#pw").is_err() && parse_ref("vault:/#pw").is_err()); // no path
         assert_eq!(

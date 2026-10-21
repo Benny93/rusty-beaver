@@ -81,6 +81,9 @@ def main():
             call("revert_changes")
             call("close_tab", {"index": 1})
             call("close_tab", {"index": 0})
+            # explain with nothing to explain leaves no empty editor behind
+            call("explain", {}, ok=False)
+            assert call("get_state")["tabs"] == [], call("get_state")["tabs"]
 
         def navigator():
             tables = [t["name"] for t in call("connect", {"connection": DB})["tables"]]

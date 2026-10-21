@@ -385,7 +385,9 @@ impl AppView {
             }
             "explain" => {
                 let sql = a["sql"].as_str().map(String::from);
-                if self.tabs.is_empty()
+                // an editor only for given SQL: without, there is nothing to explain
+                if sql.is_some()
+                    && self.tabs.is_empty()
                     && let Err(e) = self.new_editor(None, window, cx)
                 {
                     return now(self, Err(e), window, cx, done);

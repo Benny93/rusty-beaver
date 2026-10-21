@@ -697,14 +697,15 @@ impl Session {
                 )
             })
             .collect();
-        let pk: Vec<String> = cols
-            .rows
-            .iter()
-            .filter(|c| text(&c[3]) == "PK")
-            .map(|c| driver.quote(text(&c[0])))
-            .collect();
-        if !pk.is_empty() {
-            lines.push(format!("    PRIMARY KEY ({})", pk.join(", ")));
+        // the key's own column order: PRIMARY KEY (b, a) is another index than (a, b)
+        let pk = self.query(&format!(
+            "SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE contype = 'p' \
+             AND conrelid = (quote_ident({s}) || '.' || quote_ident({t}))::regclass",
+            s = driver.literal(schema),
+            t = driver.literal(name)
+        ))?;
+        if let Some(def) = pk.rows.first().and_then(|r| r[0].as_deref()) {
+            lines.push(format!("    {def}"));
         }
         Ok(format!(
             "CREATE TABLE {} (\n{}\n);",

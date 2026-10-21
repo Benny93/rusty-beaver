@@ -370,6 +370,7 @@ impl AppView {
                     return Ok(Some("Waiting for confirmation…".into()));
                 }
                 (self.tabs[ix].running, self.tabs[ix].started) = (true, Some(Instant::now()));
+                self.tabs[ix].editing = None; // an open cell editor would change it meanwhile
                 let key = self.tabs[ix].grid.entity_id();
                 // Manual commit: the changes join the open transaction instead of committing.
                 let (manual, in_tx) = self
@@ -441,6 +442,11 @@ impl AppView {
         value: Option<String>,
         cx: &mut Context<Self>,
     ) {
+        if self.tabs[tab].running {
+            // the rows are about to be replaced (load) or the changes cleared (save)
+            self.status = "Not changed: wait until it has loaded or saved".into();
+            return;
+        }
         self.tabs[tab].grid.update(cx, |g, cx| {
             let d = g.delegate_mut();
             let loaded = d.r.rows.get(id).and_then(|r| r.get(col)).cloned();
@@ -472,8 +478,11 @@ impl AppView {
         // Enter on a NULL cell without typing keeps it NULL (not '')
         let was_null = t.grid.read(cx).delegate().value(id, col) == "NULL";
         if let Some(v) = value.filter(|v| !(was_null && v.is_empty())) {
+            let running = self.tabs[tab].running; // set_cell says why it did not change it
             self.set_cell(tab, id, col, Some(v), cx);
-            self.status = "Cell changed (Cmd/Ctrl+S saves)".into();
+            if !running {
+                self.status = "Cell changed (Cmd/Ctrl+S saves)".into();
+            }
         }
         self.tabs[tab]
             .grid

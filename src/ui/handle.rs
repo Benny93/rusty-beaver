@@ -239,6 +239,9 @@ impl AppView {
                         if !matches!(self.tabs[self.active].kind, TabKind::Table(_)) {
                             return Err("query results are read-only; open_table to edit".into());
                         }
+                        if self.tabs[self.active].running {
+                            return Err("wait until it has loaded or saved".into());
+                        }
                         let id = self.tabs[self.active]
                             .grid
                             .read(cx)

@@ -190,7 +190,12 @@ fn lex(sql: &str, mysql: bool) -> Vec<Tok<'_>> {
                 out.push(Tok::Semi);
                 i += 1;
             }
-            _ if c.is_ascii_alphanumeric() || c == b'_' || c >= 0x80 => {
+            // .5 is a number too (not ". 5")
+            _ if c.is_ascii_alphanumeric()
+                || c == b'_'
+                || c >= 0x80
+                || c == b'.' && b.get(i + 1).is_some_and(u8::is_ascii_digit) =>
+            {
                 while i < b.len()
                     && (b[i].is_ascii_alphanumeric()
                         || b[i] == b'_'
@@ -199,7 +204,7 @@ fn lex(sql: &str, mysql: bool) -> Vec<Tok<'_>> {
                 {
                     i += 1;
                     // the sign of an exponent: 1.5e-3
-                    if c.is_ascii_digit()
+                    if (c.is_ascii_digit() || c == b'.')
                         && matches!(b[i - 1], b'e' | b'E')
                         && matches!(b.get(i), Some(b'+' | b'-'))
                         && b.get(i + 1).is_some_and(u8::is_ascii_digit)
@@ -234,6 +239,7 @@ fn lex(sql: &str, mysql: bool) -> Vec<Tok<'_>> {
                         || b[i] == b'$' && next.is_some_and(u8::is_ascii_digit)
                         || b[i] == b'-' && next == Some(&b'-')
                         || b[i] == b'/' && next == Some(&b'*')
+                        || b[i] == b'.' && next.is_some_and(u8::is_ascii_digit)
                         || b[i] == b'$' && crate::db::dollar_quote_end(sql, i).is_some()
                 };
                 while i < b.len()
@@ -412,6 +418,9 @@ mod tests {
         assert!(out.contains("$$a, b$$"), "{out}");
         assert!(out.contains("1.5e-3"), "{out}");
         let out = format_sql("select * from t where a=:id and b=$1 and c = E'it\\'s' -- x\n");
+        let half = format_sql("select .5, a*.25 from t");
+        assert!(half.contains(".5,") && half.contains(".25"), "{half}"); // numbers stay whole
+        assert!(!half.contains(". 5") && !half.contains(". 25"), "{half}");
         let lit = r"'a\'b, from c'";
         assert!(super::format_sql_as(&format!("select {lit} from t"), true).contains(lit));
         let my = format_sql("select a # note\n+ 1 from t");

@@ -765,9 +765,19 @@ impl AppView {
             let loaded = g.r.rows.len() - g.changes.inserted.len();
             t.total.filter(|&n| n as usize > loaded)
         });
+        // a result cut at the row cap has more rows than the file
+        let capped = self
+            .tabs
+            .get(self.active)
+            .is_some_and(|t| t.grid.read(cx).delegate().r.truncated);
         let msg = match total {
             Some(n) => format!(
                 "Exported {rows} of {n} rows (the loaded pages) to {}; Load more first, or export a SELECT",
+                path.display()
+            ),
+            None if capped => format!(
+                "Exported the first {} to {}: the result stops at that many; narrow the SELECT or page through it",
+                plural(rows, "row"),
                 path.display()
             ),
             None => format!("Exported {} to {}", plural(rows, "row"), path.display()),

@@ -371,6 +371,10 @@ def main():
             assert r.get("ok"), r
 
         def io_and_views():
+            # a result cut at the row cap says so when exported
+            call("run_sql", {"connection": DB, "sql": "WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 10001) SELECT x FROM n"})
+            msg = call("export_csv", {"path": os.path.join(tmp, "cap.csv")})["ok"]
+            assert "first" in msg, msg
             out = os.path.join(tmp, "beavers.json")
             call("run_sql", {"connection": DB, "sql": "SELECT name, rank FROM beavers"})
             call("export_csv", {"path": out})

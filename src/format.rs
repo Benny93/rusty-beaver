@@ -356,7 +356,15 @@ pub fn format_sql_as(sql: &str, mysql: bool) -> String {
             }
             Tok::Raw(r) => {
                 out.push_str(r);
-                if r.starts_with("--") || r.starts_with('#') {
+                // 'abc' then 'def' on the next line: one string to Postgres, so the line break
+                // stays (on one line they are an error)
+                let continued = r.ends_with('\'')
+                    && matches!(toks.get(i + 1), Some(Tok::Raw(n)) if n.ends_with('\'') && {
+                        let end = r.as_ptr() as usize + r.len() - sql.as_ptr() as usize;
+                        let next = n.as_ptr() as usize - sql.as_ptr() as usize;
+                        sql.get(end..next).is_some_and(|gap| gap.contains('\n'))
+                    });
+                if r.starts_with("--") || r.starts_with('#') || continued {
                     // a line comment ends its line; the next one keeps the comment's indent
                     let indent = out
                         .rsplit('\n')
@@ -482,6 +490,9 @@ mod tests {
             p.contains("@id") && p.contains("$id") && p.contains("?1"),
             "{p}"
         );
+        // 'abc' and 'def' on two lines are one string in Postgres; on one line an error
+        let cont = format_sql("select 'abc'\n'def' from t");
+        assert!(cont.contains("'abc'\n"), "{cont}");
         // MySQL refuses CAST (…) with a space (ERROR 1064)
         assert!(format_sql("select cast(x as char) from t").contains("CAST(x AS char)"));
         assert!(

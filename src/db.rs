@@ -465,9 +465,17 @@ pub fn connect(c: &ConnConfig) -> Result<Session, String> {
     let c = &crate::vault::resolve(c, &crate::vault::open_browser)?;
     let e = |e: &dyn std::fmt::Display| e.to_string();
     let mut s = match c.driver {
-        Driver::Sqlite => Session::Sqlite(
-            rusqlite::Connection::open(sqlite_path(&c.database)).map_err(|x| e(&x))?,
-        ),
+        Driver::Sqlite => {
+            // read-only: a mistyped path is an error, not a new empty database
+            let mut flags = rusqlite::OpenFlags::default();
+            if c.read_only {
+                flags.remove(rusqlite::OpenFlags::SQLITE_OPEN_CREATE);
+            }
+            Session::Sqlite(
+                rusqlite::Connection::open_with_flags(sqlite_path(&c.database), flags)
+                    .map_err(|x| e(&x))?,
+            )
+        }
         Driver::Postgres => Session::Postgres(
             pg_config(c)
                 .connect(pg_tls(c.ssl == Ssl::VerifyFull)?)
@@ -2818,6 +2826,15 @@ mod tests {
         .unwrap();
         assert!(s.query("SELECT 1").is_ok());
         assert!(s.query("CREATE TABLE t(a)").is_err());
+        // a mistyped path of a read-only connection creates no empty database there
+        let typo = std::env::temp_dir().join(format!("rb-typo-{}.db", std::process::id()));
+        let ro = ConnConfig {
+            database: typo.to_string_lossy().into_owned(),
+            read_only: true,
+            ..Default::default()
+        };
+        assert!(connect(&ro).is_err());
+        assert!(!typo.exists());
     }
 
     #[test]

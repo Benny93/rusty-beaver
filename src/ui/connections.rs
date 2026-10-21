@@ -530,9 +530,15 @@ impl AppView {
                     if cols.rows.is_empty() {
                         return Err(format!("no table {table:?}")); // SELECT FROM "usres"
                     }
+                    // generated columns take no value: none in an INSERT, a key one only in
+                    // the WHERE
                     let cols: Vec<(String, bool)> = cols
                         .rows
                         .iter()
+                        .filter(|c| {
+                            !db::text(&c[1]).ends_with(db::GENERATED)
+                                || kind != "insert" && db::text(&c[3]) == "PK"
+                        })
                         .map(|c| (db::text(&c[0]).to_string(), db::text(&c[3]) == "PK"))
                         .collect();
                     db::generate(driver, &table, &cols, kind)

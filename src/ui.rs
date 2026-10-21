@@ -859,6 +859,11 @@ impl AppView {
                     let _ = v.close_tab(tab, window, cx);
                     return done(v, Err(format!("no table {table:?}")), window, cx);
                 }
+                // nor one for a connection that failed: loading would only try it again
+                if new_tab && let Err(e) = r {
+                    let _ = v.close_tab(tab, window, cx);
+                    return done(v, Err(e), window, cx);
+                }
                 if let (Ok((cols, ddl)), Some(t)) = (r, v.tabs.get_mut(tab)) {
                     t.key = cols
                         .rows

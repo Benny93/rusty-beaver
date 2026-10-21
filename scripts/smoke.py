@@ -95,6 +95,11 @@ def main():
             before = len(call("get_state")["tabs"])
             call("open_table", {"connection": DB, "table": "usres"}, ok=False)
             assert len(call("get_state")["tabs"]) == before  # no tab for a table that is not there
+            # nor for a connection that does not connect
+            call("add_connection", {"name": "Broken", "driver": "sqlite", "database": "/nonexistent/dir/x.db"})
+            call("open_table", {"connection": "Broken", "table": "t"}, ok=False)
+            assert len(call("get_state")["tabs"]) == before, call("get_state")["tabs"]
+            call("delete_connection", {"connection": "Broken"})
             # a name that differs only by spaces is the same name
             assert "exists" in call("add_connection", {"name": DB + " ", "driver": "sqlite", "database": db}, ok=False)
             # testing settings creates no database file

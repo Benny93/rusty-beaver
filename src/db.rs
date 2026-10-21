@@ -124,7 +124,8 @@ impl Driver {
         match self {
             Driver::Sqlite => {
                 // REFERENCES t without columns means t's primary key
-                "SELECT m.name, p.\"from\", p.\"table\", coalesce(p.\"to\", (SELECT k.name FROM pragma_table_info(p.\"table\") k WHERE k.pk = p.seq + 1), '') FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) p WHERE m.type = 'table' ORDER BY 1"
+                // REFERENCES T names table t: as it is named, like the table list has it
+                "SELECT m.name, p.\"from\", coalesce((SELECT t.name FROM sqlite_master t WHERE t.type = 'table' AND t.name = p.\"table\" COLLATE NOCASE), p.\"table\"), coalesce(p.\"to\", (SELECT k.name FROM pragma_table_info(p.\"table\") k WHERE k.pk = p.seq + 1), '') FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) p WHERE m.type = 'table' ORDER BY 1"
             }
             Driver::Postgres => {
                 // pg_constraint pairs the columns of composite keys, and constraint names are
@@ -2259,6 +2260,11 @@ mod tests {
         assert_eq!(texts(&fk.rows)[1][3..], ["FK", "t.id"]);
         assert_eq!(texts(&fk.rows)[2][3..], ["FK", "t.id"]); // bare REFERENCES t: its primary key
         assert_eq!(s.foreign_keys().unwrap().len(), 2);
+        // REFERENCES T: the table as it is named (the ER diagram matches names exactly)
+        s.query("CREATE TABLE d(t_id INT REFERENCES T(id))")
+            .unwrap();
+        let d = s.foreign_keys().unwrap();
+        assert_eq!(d.iter().find(|f| f.table == "d").unwrap().ref_table, "t");
         assert!(s.query("SELEC nope").is_err());
     }
 

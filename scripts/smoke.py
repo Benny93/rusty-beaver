@@ -82,6 +82,7 @@ def main():
             call("record_view", {"on": False})
             call("new_sql_editor", {"connection": DB})
             assert "empty" in call("execute_editor", {}, ok=False)  # refused, not "started"
+            assert "absolute" in call("save_script", {"path": "relative.sql"}, ok=False)
 
         def params_format_explain():
             r = call("run_sql", {"sql": "SELECT count(*) FROM beavers WHERE rank = :rank", "params": {"rank": "'Private'"}})

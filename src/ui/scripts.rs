@@ -185,6 +185,9 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Result<usize, String> {
+        if !path.is_absolute() {
+            return Err(format!("{}: give an absolute path", path.display()));
+        }
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let tab = self.new_editor(None, window, cx)?;
         let t = &mut self.tabs[tab];
@@ -213,6 +216,10 @@ impl AppView {
         let path = path
             .or(t.path.clone())
             .ok_or("no file yet: use Save Script As")?;
+        if !path.is_absolute() {
+            // relative to the app's working directory: / when started from Finder
+            return Err(format!("{}: give an absolute path", path.display()));
+        }
         std::fs::write(&path, t.editor.read(cx).value().as_bytes())
             .map_err(|e| format!("{}: {e}", path.display()))?;
         t.title = path

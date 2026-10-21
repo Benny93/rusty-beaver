@@ -1728,7 +1728,23 @@ fn writes(sql: &str, mysql: bool) -> bool {
     while i < b.len() {
         match b[i] {
             b'\'' if e_string(b, i) => i = quote_end(b, i, true),
-            b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
+            // a quoted name is still a name: SET "default_transaction_read_only" = off,
+            // "set_config"(…)
+            b'"' | b'`' => {
+                let end = quote_end(b, i, mysql);
+                let name = sql[i + 1..end.min(b.len())].to_ascii_uppercase();
+                let unlocks = |s: &str| UNLOCKS.contains(&s);
+                if set && unlocks(&name)
+                    || name == "SET_CONFIG" && {
+                        let upper = sql.to_ascii_uppercase();
+                        UNLOCKS.iter().any(|u| upper.contains(u))
+                    }
+                {
+                    return true;
+                }
+                i = end;
+            }
+            b'\'' => i = quote_end(b, i, mysql),
             b'-' | b'#' if line_comment(b, i, mysql) => {
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
@@ -3025,6 +3041,19 @@ mod tests {
         // read-only switched off in another form: PRAGMA x(0), set_config(…)
         assert!(is_write_any("PRAGMA query_only(0)"));
         assert!(is_write_any("SET SESSION tx_read_only = 0")); // MySQL 5.7, MariaDB
+        // …also with the name quoted
+        assert!(is_write(
+            "SET \"default_transaction_read_only\" = off",
+            false
+        ));
+        assert!(is_write(
+            "SELECT \"set_config\"('default_transaction_read_only', 'off', false)",
+            false
+        ));
+        assert!(!is_write(
+            "SELECT \"default_transaction_read_only\" FROM t",
+            false
+        ));
         assert!(!is_write_any("PRAGMA table_info(t)"));
         assert!(is_write(
             "SELECT set_config('default_transaction_read_only', 'off', false)",

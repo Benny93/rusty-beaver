@@ -1565,6 +1565,15 @@ pub fn is_write(sql: &str) -> bool {
     writes(sql, false) || writes(sql, true)
 }
 
+/// A `--` (or MySQL `#`) comment starts at `i`. MySQL: -- only before a space (1--1 is
+/// 1 - -1).
+fn line_comment(b: &[u8], i: usize, mysql: bool) -> bool {
+    b[i] == b'#' && mysql
+        || b[i] == b'-'
+            && b.get(i + 1) == Some(&b'-')
+            && !(mysql && b.get(i + 2).is_some_and(|c| *c > b' '))
+}
+
 /// The quote at `i` opens a Postgres E'…' string, where a backslash escapes.
 fn e_string(b: &[u8], i: usize) -> bool {
     i > 0
@@ -1611,13 +1620,7 @@ fn writes(sql: &str, mysql: bool) -> bool {
     while i < b.len() {
         match b[i] {
             b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
-            // MySQL: -- starts a comment only before a space (1--1 is 1 - -1)
-            b'-' | b'#'
-                if b[i] == b'#' && mysql
-                    || b[i] == b'-'
-                        && b.get(i + 1) == Some(&b'-')
-                        && !(mysql && b.get(i + 2).is_some_and(|c| *c > b' ')) =>
-            {
+            b'-' | b'#' if line_comment(b, i, mysql) => {
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
                 }
@@ -1700,11 +1703,13 @@ pub fn statement_heads(sql: &str, mysql: bool) -> Vec<(String, String)> {
                     cur.push(String::new()); // CREATE "x": no second keyword
                 }
             }
-            b'-' | b'#' if b[i] == b'#' && mysql || b[i] == b'-' && b.get(i + 1) == Some(&b'-') => {
+            b'-' | b'#' if line_comment(b, i, mysql) => {
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
                 }
             }
+            // MySQL runs the body of /*! … */
+            b'/' if mysql && b.get(i + 1) == Some(&b'*') && b.get(i + 2) == Some(&b'!') => i += 2,
             b'/' if b.get(i + 1) == Some(&b'*') => {
                 i += 2;
                 while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
@@ -1842,7 +1847,7 @@ pub fn statement_at(sql: &str, offset: usize, mysql: bool) -> std::ops::Range<us
         match b[i] {
             b'\'' if e_string(b, i) => i = quote_end(b, i, true),
             b'\'' | b'"' | b'`' => i = quote_end(b, i, mysql),
-            b'-' | b'#' if b[i] == b'#' && mysql || b[i] == b'-' && b.get(i + 1) == Some(&b'-') => {
+            b'-' | b'#' if line_comment(b, i, mysql) => {
                 while i < b.len() && b[i] != b'\n' {
                     i += 1;
                 }
@@ -2989,6 +2994,23 @@ mod tests {
             heads.iter().map(|h| h.0.as_str()).collect::<Vec<_>>(),
             ["SELECT", "SELECT"]
         );
+        // MySQL: --1 is no comment, and the body of /*! … */ runs (mysqldump triggers)
+        let first = |sql: &str| {
+            statement_heads(sql, true)
+                .into_iter()
+                .map(|h| h.0)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(first("SELECT 1--1; DROP TABLE t"), ["SELECT", "DROP"]);
+        assert_eq!(
+            first(
+                "/*!50003 CREATE*/ /*!50003 TRIGGER t BEFORE INSERT ON x FOR EACH ROW SET @a = 1 */;"
+            ),
+            ["CREATE"]
+        );
+        assert_eq!(first("SELECT 1 -- x\n"), ["SELECT"]);
+        let m = "UPDATE t SET a = a--1; SELECT 2";
+        assert_eq!(&m[statement_at(m, 0, true)], "UPDATE t SET a = a--1;");
     }
 
     #[test]

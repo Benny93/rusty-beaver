@@ -127,11 +127,16 @@ fn lex(sql: &str) -> Vec<Tok<'_>> {
         match c {
             b'\'' | b'"' | b'`' => {
                 i += 1;
-                while i < b.len() && b[i] != c {
-                    i += 1;
+                // a doubled quote ('it''s') stays inside
+                while i < b.len() && (b[i] != c || b.get(i + 1) == Some(&c)) {
+                    i += if b[i] == c { 2 } else { 1 };
                 }
                 i += 1;
                 out.push(Tok::Raw(&sql[start..i.min(b.len())]));
+            }
+            b'$' if crate::db::dollar_quote_end(sql, i).is_some() => {
+                i = crate::db::dollar_quote_end(sql, i).unwrap_or(b.len());
+                out.push(Tok::Raw(&sql[start..i]));
             }
             b'-' if b.get(i + 1) == Some(&b'-') => {
                 while i < b.len() && b[i] != b'\n' {
@@ -171,6 +176,14 @@ fn lex(sql: &str) -> Vec<Tok<'_>> {
                         || b[i] >= 0x80)
                 {
                     i += 1;
+                    // the sign of an exponent: 1.5e-3
+                    if c.is_ascii_digit()
+                        && matches!(b[i - 1], b'e' | b'E')
+                        && matches!(b.get(i), Some(b'+' | b'-'))
+                        && b.get(i + 1).is_some_and(u8::is_ascii_digit)
+                    {
+                        i += 1;
+                    }
                 }
                 out.push(Tok::Word(&sql[start..i]));
             }
@@ -308,7 +321,7 @@ pub fn toggle_comment(text: &str, range: std::ops::Range<usize>) -> String {
     let indent = lines
         .iter()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| l.len() - l.trim_start().len())
+        .map(|l| l.len() - l.trim_start_matches([' ', '\t']).len())
         .min()
         .unwrap_or(0);
     let new: Vec<String> = lines
@@ -331,6 +344,16 @@ pub fn toggle_comment(text: &str, range: std::ops::Range<usize>) -> String {
 #[cfg(test)]
 mod tests {
     use super::{format_sql, toggle_comment};
+
+    #[test]
+    fn literals_survive_formatting() {
+        let out = format_sql("select 'it''s', $$a, b$$, 1.5e-3 from t");
+        assert!(out.contains("'it''s'"), "{out}");
+        assert!(out.contains("$$a, b$$"), "{out}");
+        assert!(out.contains("1.5e-3"), "{out}");
+        // non-breaking space indent: no slicing inside a character
+        assert!(toggle_comment("\u{a0}x\n y", 0..5).contains("-- "));
+    }
 
     #[test]
     fn comments_toggle() {

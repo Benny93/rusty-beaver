@@ -1302,6 +1302,12 @@ pub fn is_write(sql: &str) -> bool {
                     i += 1;
                 }
             }
+            b'$' => {
+                if let Some(end) = dollar_quote_end(sql, i) {
+                    i = end;
+                    continue;
+                }
+            }
             c if c.is_ascii_alphabetic() => {
                 let start = i;
                 while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
@@ -1367,6 +1373,22 @@ pub fn row_counts_sql(driver: Driver, tables: &[String]) -> String {
     format!("{}\nORDER BY row_count DESC;", parts.join("\nUNION ALL\n"))
 }
 
+/// End (past the closing tag) of a Postgres dollar-quoted string `$tag$ … $tag$` at `i`;
+/// None when `i` starts none (`$1`, unclosed).
+pub fn dollar_quote_end(sql: &str, i: usize) -> Option<usize> {
+    let b = sql.as_bytes();
+    let n = b[i + 1..]
+        .iter()
+        .position(|&c| !(c.is_ascii_alphanumeric() || c == b'_'))?;
+    if b[i + 1 + n] != b'$' || b.get(i + 1).is_some_and(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let tag = &sql[i..i + n + 2];
+    sql[i + n + 2..]
+        .find(tag)
+        .map(|j| i + n + 2 + j + tag.len())
+}
+
 /// Byte range of the statement at `offset`: statements end at `;` or at a blank line,
 /// outside quotes and comments (DBeaver's "smart" delimiting). A cursor in the gap after a
 /// statement belongs to that statement.
@@ -1394,6 +1416,12 @@ pub fn statement_at(sql: &str, offset: usize) -> std::ops::Range<usize> {
                     i += 1;
                 }
                 i += 1;
+            }
+            b'$' => {
+                if let Some(end) = dollar_quote_end(sql, i) {
+                    i = end;
+                    continue;
+                }
             }
             b';' => bounds.push(i + 1),
             b'\n' => {
@@ -1997,6 +2025,8 @@ mod tests {
         assert!(is_write("SELECT 1; Update t SET a = 1"));
         assert!(!is_write("EXPLAIN SELECT * FROM updates_log"));
         assert!(is_write("REPLACE INTO t VALUES (1)"));
+        assert!(is_write("SELECT $a$'$a$; DELETE FROM t; --'"));
+        assert!(!is_write("SELECT $$ delete $$, $1"));
         assert!(is_write("SELECT * INTO newt FROM t"));
     }
 
@@ -2035,6 +2065,8 @@ mod tests {
             "SELECT ';' AS semi -- ; comment\n  FROM t;"
         ); // blank line gap
         assert_eq!(&"  "[statement_at("  ", 1)], "");
+        let f = "CREATE FUNCTION f() RETURNS int AS $body$\nBEGIN\n  PERFORM 1;\n\n  RETURN 1;\nEND $body$ LANGUAGE plpgsql;";
+        assert_eq!(&f[statement_at(f, 3)], f);
     }
 
     #[test]

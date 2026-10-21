@@ -1313,6 +1313,18 @@ fn mysql_query(c: &mut mysql::Conn, sql: &str) -> Result<Vec<QueryResult>, Strin
     // Which statement each result belongs to: one result each, a CALL its result sets and then
     // an OK packet, dropped below. An UPDATE that matched nothing looks like that packet.
     let heads = statement_heads(sql, true);
+    // the driver answers LOAD DATA LOCAL with an empty file ("0 rows", no error); refused
+    // before it is sent (a refusing file handler leaves the connection out of step)
+    let upper = sql.to_ascii_uppercase();
+    let words: Vec<&str> = upper.split_whitespace().collect();
+    // LOAD DATA [LOW_PRIORITY | CONCURRENT] LOCAL (not a path with "local" in it)
+    if heads.iter().any(|(w1, _)| w1 == "LOAD")
+        && words.windows(4).any(|w| {
+            w[0] == "LOAD" && (w[1] == "DATA" || w[1] == "XML") && w[2..].contains(&"LOCAL")
+        })
+    {
+        return Err("LOAD DATA LOCAL is not supported here: load the file with Import CSV".into());
+    }
     // a BEGIN … END body is split at its ; into heads the server sends no results for: the
     // count is off, so nothing is dropped then
     let counted = !heads.iter().any(|(w, _)| w == "END");

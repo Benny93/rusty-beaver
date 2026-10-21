@@ -272,7 +272,11 @@ pub fn suggest(text: &str, offset: usize, catalog: &Catalog) -> (usize, Vec<Sugg
         // audit.dams.: that schema's table, not the first dams
         match q[..qs].strip_suffix('.') {
             Some(s) if !s.is_empty() && name_start(s) < s.len() => {
-                format!("{}.{name}", unquote(&s[name_start(s)..]))
+                let full = format!("{}.{name}", unquote(&s[name_start(s)..]));
+                // a catalog of bare names (MySQL's db.t, SQLite's main.t): the table itself
+                let known = catalog.columns.contains_key(&full)
+                    || catalog.tables.iter().any(|t| t.eq_ignore_ascii_case(&full));
+                if known { full } else { name }
             }
             _ => name,
         }
@@ -723,6 +727,12 @@ mod tests {
         c2.set_columns("audit.dams", vec![("changed".into(), "TIMESTAMP".into())]);
         let (_, s) = suggest("SELECT dams.h FROM public.dams", 13, &c2);
         assert_eq!(s[0].label, "height"); // public's dams, though audit.dams loaded last
+        // db.table. on MySQL/SQLite, whose catalog has bare names: that table
+        let (_, s) = suggest("SELECT main.lodges. FROM lodges", 19, &c2);
+        assert_eq!(
+            s.iter().map(|x| x.label.as_str()).collect::<Vec<_>>(),
+            ["name", "river"]
+        );
         // schema.table. names its schema's table
         for text in [
             "SELECT audit.dams. FROM public.dams, audit.dams",

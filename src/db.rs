@@ -555,7 +555,11 @@ impl Session {
         let start = Instant::now();
         let mut v = match self {
             Session::Sqlite(c) => sqlite_query(c, sql),
-            Session::Postgres(c) => pg_query(c, sql),
+            // the capped form, else as it is (when it does not parse as a subquery: nothing ran)
+            Session::Postgres(c) => match pg_capped(sql) {
+                Some(capped) => pg_query(c, &capped).or_else(|_| pg_query(c, sql)),
+                None => pg_query(c, sql),
+            },
             Session::Mysql(c) => mysql_query(c, sql),
         }?;
         for r in &mut v {
@@ -862,6 +866,24 @@ fn sqlite_query(c: &rusqlite::Connection, sql: &str) -> Result<Vec<QueryResult>,
     Ok(out)
 }
 
+/// A single read-only query with the row cap applied by the server: the Postgres client
+/// collects a whole result in memory before `push_row` could stop it (50M rows: out of memory).
+/// Writes, SELECT INTO and scripts stay as they are.
+fn pg_capped(sql: &str) -> Option<String> {
+    let heads = statement_heads(sql, false);
+    let reads = heads.len() == 1
+        && matches!(heads[0].0.as_str(), "SELECT" | "WITH" | "VALUES" | "TABLE")
+        && !is_write(sql);
+    let body = sql.trim_end().trim_end_matches(';');
+    // newlines: a trailing -- comment must not swallow the closing parenthesis
+    reads.then(|| {
+        format!(
+            "SELECT * FROM (\n{body}\n) AS rusty_beaver LIMIT {}",
+            MAX_ROWS + 1
+        )
+    })
+}
+
 fn pg_query(c: &mut postgres::Client, sql: &str) -> Result<Vec<QueryResult>, String> {
     use postgres::SimpleQueryMessage as M;
     let mut out = vec![];
@@ -1080,6 +1102,11 @@ fn mysql_query(c: &mut mysql::Conn, sql: &str) -> Result<Vec<QueryResult>, Strin
         };
         for row in set {
             let row = row.map_err(|e| e.to_string())?;
+            if r.rows.len() >= MAX_ROWS {
+                // past the cap: the rest is only read off the connection (MySQL needs that)
+                r.truncated = true;
+                continue;
+            }
             let cells = (0..row.len())
                 .map(|i| match row.as_ref(i) {
                     None | Some(V::NULL) => "NULL".into(),
@@ -2372,6 +2399,21 @@ mod tests {
             ["id"]
         );
         assert_eq!(split_order("a = 1 order by b"), ("a = 1 ", "order by b"));
+        assert_eq!(
+            pg_capped("SELECT * FROM t -- all\n;").unwrap(),
+            format!(
+                "SELECT * FROM (\nSELECT * FROM t -- all\n\n) AS rusty_beaver LIMIT {}",
+                MAX_ROWS + 1
+            )
+        );
+        for not in [
+            "SELECT 1; SELECT 2",
+            "SELECT * INTO t2 FROM t",
+            "WITH d AS (DELETE FROM t RETURNING *) SELECT * FROM d",
+            "SHOW search_path",
+        ] {
+            assert_eq!(pg_capped(not), None, "{not}");
+        }
         let h = |sql| statement_heads(sql, true);
         assert_eq!(
             h("-- note\nINSERT INTO t VALUES (';'); create temporary table x(a); COMMIT"),

@@ -202,7 +202,7 @@ fn lex(sql: &str, mysql: bool) -> Vec<Tok<'_>> {
                         || b[i] == b'_'
                         || b[i] == b'.'
                         || b[i] >= 0x80
-                        || b[i] == b'$')
+                        || b[i] == b'$' && crate::db::dollar_quote_end(sql, i).is_none())
                 {
                     i += 1;
                     // the sign of an exponent: 1.5e-3
@@ -461,6 +461,13 @@ mod tests {
             format_sql("select a$b, x$ from t").contains("a$b,"),
             "{}",
             format_sql("select a$b from t")
+        );
+        // …but a dollar quote right after a word is still one
+        let body = "CREATE FUNCTION f() RETURNS int AS$$select 1; select 2$$ LANGUAGE sql";
+        assert!(
+            format_sql(body).contains("$$select 1; select 2$$"),
+            "{}",
+            format_sql(body)
         );
         let u = r#"select U&'d\0061t', U&"d!0061t" UESCAPE '!' from t"#;
         assert!(

@@ -54,7 +54,7 @@ pub struct SqlArg {
     /// Max rows returned to you (the grid still shows everything), default 50.
     pub max_rows: Option<usize>,
     /// Values for `:name` parameters in the SQL, inserted as typed (quote strings: "'Private'").
-    pub params: Option<std::collections::BTreeMap<String, String>>,
+    pub params: Option<std::collections::BTreeMap<String, Value>>,
     /// Required (true) to run data-changing SQL on a production connection.
     pub confirm: Option<bool>,
 }
@@ -218,8 +218,8 @@ pub struct RowArg {
 
 #[derive(Deserialize, JsonSchema)]
 pub struct AddRowArg {
-    /// Column name -> value for the new row; columns left out stay NULL / default.
-    pub values: std::collections::BTreeMap<String, String>,
+    /// Column name -> value for the new row (null: NULL); columns left out stay NULL / default.
+    pub values: std::collections::BTreeMap<String, Value>,
 }
 
 #[derive(Deserialize, JsonSchema)]

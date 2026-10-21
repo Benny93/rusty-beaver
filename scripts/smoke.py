@@ -108,6 +108,8 @@ def main():
         def params_format_explain():
             r = call("run_sql", {"sql": "SELECT count(*) FROM beavers WHERE rank = :rank", "params": {"rank": "'Private'"}})
             assert r["rows"] == [["2"]], r
+            # numbers and null as JSON values, not only strings
+            assert call("run_sql", {"sql": "SELECT :n + 1", "params": {"n": 41}})["rows"] == [["42"]]
             assert call("format_sql", {"sql": "select a from t where b = 1"})["sql"].startswith("SELECT\n    a\nFROM t")
             assert call("explain", {"sql": "SELECT * FROM beavers WHERE id = 1"})["row_count"] >= 1
             assert "one statement" in call("explain", {"sql": "SELECT 1; DELETE FROM missions"}, ok=False)
@@ -163,7 +165,7 @@ def main():
             call("revert_changes")
             # a row added and deleted again is no change, also in the reply
             call("open_table", {"connection": DB, "table": "lodges"})
-            call("add_row", {"values": {"name": "Gone"}})
+            call("add_row", {"values": {"name": "Gone", "river": None}})
             rows = call("get_results")["row_count"]
             c = call("delete_row", {"row": rows - 1})
             assert (c["pending_changes"], c["added_rows"], c["deleted_rows"]) == (0, 0, []), c

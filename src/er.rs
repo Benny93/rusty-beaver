@@ -164,7 +164,11 @@ impl Diagram {
                 };
                 let a_y = row_y(from, fy, &l.column);
                 let b_y = row_y(to, ty, ref_col);
-                Some(if tx >= fx + BOX_W / 2. {
+                Some(if (tx - fx).abs() < BOX_W {
+                    // one above the other (dragged, or a table referencing itself): both
+                    // ends on the right side, not a line across the boxes
+                    ((fx + BOX_W, a_y), (tx + BOX_W, b_y))
+                } else if tx > fx {
                     ((fx + BOX_W, a_y), (tx, b_y))
                 } else {
                     ((fx, a_y), (tx + BOX_W, b_y))
@@ -242,6 +246,12 @@ mod tests {
         let x = |n: &str| d.pos[n].0;
         assert!(x("lodges") < x("beavers") && x("beavers") < x("missions"));
         assert_eq!(x("loose"), x("lodges"));
+        // boxes one above the other (dragged there): both ends on the same side, not across
+        let mut stacked = d.clone();
+        stacked.pos.insert("missions".into(), (20., 20.));
+        stacked.pos.insert("beavers".into(), (20., 300.));
+        let (a, b) = stacked.link_points()[0];
+        assert_eq!(a.0, b.0, "{a:?} {b:?}");
         // missions.leader_id (row 1) -> beavers' PK row 0, from missions' left side to beavers' right side
         let pts = d.link_points();
         assert_eq!(

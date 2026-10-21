@@ -140,7 +140,7 @@ impl Driver {
 
     /// Query describing a table's columns: rows of (name, type, nullable, key).
     fn columns_sql(self, table: &str) -> String {
-        let lit = |s: &str| format!("'{}'", s.replace('\'', "''"));
+        let lit = |s: &str| self.literal(s);
         match self {
             Driver::Sqlite => format!(
                 "SELECT name, type, CASE \"notnull\" WHEN 1 THEN 'NO' ELSE 'YES' END, CASE WHEN pk > 0 THEN 'PK' ELSE '' END FROM pragma_table_info({})",
@@ -2372,6 +2372,11 @@ mod tests {
         assert_eq!(Driver::Sqlite.literal(r"it's C:\t"), r"'it''s C:\t'");
         assert_eq!(Driver::Postgres.literal(r"a\"), r"'a\'");
         assert_eq!(Driver::Mysql.literal(r"it's C:\t\"), r"'it''s C:\\t\\'");
+        assert!(
+            Driver::Mysql
+                .columns_sql(r"a\b")
+                .contains(r"table_name = 'a\\b'")
+        );
     }
 
     #[test]

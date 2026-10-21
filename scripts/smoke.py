@@ -100,6 +100,11 @@ def main():
             call("open_table", {"connection": "Broken", "table": "t"}, ok=False)
             assert len(call("get_state")["tabs"]) == before, call("get_state")["tabs"]
             call("delete_connection", {"connection": "Broken"})
+            # host, user and database are trimmed as the dialog does (a password is not)
+            call("add_connection", {"name": "Spaced", "driver": "postgres", "host": " db.example.com ", "database": "app ", "user": " u"})
+            sp = [c for c in call("get_state")["connections"] if c["name"] == "Spaced"][0]
+            assert (sp["host"], sp["database"]) == ("db.example.com", "app"), sp
+            call("delete_connection", {"connection": "Spaced"})
             # a name that differs only by spaces is the same name
             assert "exists" in call("add_connection", {"name": DB + " ", "driver": "sqlite", "database": db}, ok=False)
             # testing settings creates no database file

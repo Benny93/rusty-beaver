@@ -190,8 +190,15 @@ impl AppView {
         mut cfg: ConnConfig,
         cx: &mut Context<Self>,
     ) -> Result<(), String> {
-        // "demo " from an agent is demo, as the dialog has it
-        cfg.name = cfg.name.trim().to_string();
+        // "demo " from an agent is demo, as the dialog has it (the password stays as given)
+        for f in [
+            &mut cfg.name,
+            &mut cfg.host,
+            &mut cfg.user,
+            &mut cfg.database,
+        ] {
+            *f = f.trim().to_string();
+        }
         if cfg.name.is_empty() {
             return Err("name is required".into());
         }
@@ -349,8 +356,15 @@ impl AppView {
         mut cfg: ConnConfig,
         cx: &mut Context<Self>,
     ) -> Result<u64, String> {
-        // "demo " from an agent is demo, as the dialog has it
-        cfg.name = cfg.name.trim().to_string();
+        // "demo " from an agent is demo, as the dialog has it (the password stays as given)
+        for f in [
+            &mut cfg.name,
+            &mut cfg.host,
+            &mut cfg.user,
+            &mut cfg.database,
+        ] {
+            *f = f.trim().to_string();
+        }
         if cfg.name.is_empty() {
             return Err("name is required".into());
         }

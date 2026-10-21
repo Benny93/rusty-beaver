@@ -118,11 +118,15 @@ impl Driver {
                 "SELECT m.name, p.\"from\", p.\"table\", coalesce(p.\"to\", '') FROM sqlite_master m JOIN pragma_foreign_key_list(m.name) p WHERE m.type = 'table' ORDER BY 1"
             }
             Driver::Postgres => {
-                "SELECT tc.table_schema || '.' || tc.table_name, kcu.column_name, ccu.table_schema || '.' || ccu.table_name, ccu.column_name \
-                FROM information_schema.table_constraints tc \
-                JOIN information_schema.key_column_usage kcu ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema \
-                JOIN information_schema.constraint_column_usage ccu ON ccu.constraint_name = tc.constraint_name AND ccu.constraint_schema = tc.table_schema \
-                WHERE tc.constraint_type = 'FOREIGN KEY' ORDER BY 1"
+                // pg_constraint pairs the columns of composite keys, and constraint names are
+                // only unique per table
+                "SELECT cn.nspname || '.' || cr.relname, a.attname, fn.nspname || '.' || fr.relname, af.attname \
+                FROM pg_constraint c CROSS JOIN LATERAL unnest(c.conkey, c.confkey) AS k(att, fatt) \
+                JOIN pg_class cr ON cr.oid = c.conrelid JOIN pg_namespace cn ON cn.oid = cr.relnamespace \
+                JOIN pg_class fr ON fr.oid = c.confrelid JOIN pg_namespace fn ON fn.oid = fr.relnamespace \
+                JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.att \
+                JOIN pg_attribute af ON af.attrelid = c.confrelid AND af.attnum = k.fatt \
+                WHERE c.contype = 'f' AND cn.nspname NOT IN ('pg_catalog','information_schema') ORDER BY 1"
             }
             Driver::Mysql => {
                 "SELECT table_name, column_name, referenced_table_name, referenced_column_name FROM information_schema.key_column_usage \
@@ -142,7 +146,10 @@ impl Driver {
             Driver::Postgres => {
                 let (schema, t) = table.split_once('.').unwrap_or(("public", table));
                 format!(
-                    "SELECT c.column_name, c.data_type, c.is_nullable, CASE WHEN k.column_name IS NOT NULL THEN 'PK' ELSE '' END \
+                    // format_type: varchar(50), numeric(10,2), int[], enum names (data_type has
+                    // character varying, numeric, ARRAY, USER-DEFINED)
+                    "SELECT c.column_name, (SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a \
+                     WHERE a.attrelid = (quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))::regclass AND a.attname = c.column_name), c.is_nullable, CASE WHEN k.column_name IS NOT NULL THEN 'PK' ELSE '' END \
                      FROM information_schema.columns c LEFT JOIN (SELECT ku.column_name FROM information_schema.table_constraints tc \
                      JOIN information_schema.key_column_usage ku ON tc.constraint_name = ku.constraint_name AND tc.table_schema = ku.table_schema \
                      WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = {s} AND tc.table_name = {t}) k ON k.column_name = c.column_name \

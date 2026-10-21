@@ -2949,6 +2949,15 @@ mod tests {
         assert!(is_write("SELECT 1--1; DROP TABLE t", true));
         // …while Postgres and SQLite read --x as a comment: no write, no read-only refusal
         assert!(!is_write("SELECT * FROM t --delete later", false));
+        // a word in a later string stays text after an escaped quote or a closing backslash
+        assert!(!is_write(
+            r"SELECT * FROM t WHERE name = 'O\'Brien' AND op = 'delete'",
+            true
+        ));
+        assert!(!is_write(
+            r"SELECT 'C:\' , name FROM t WHERE note = 'delete me'",
+            false
+        ));
         assert!(!is_write("SELECT 1\n--DROP TABLE x", false));
         assert!(is_write(r"SELECT E'it\'s'; DELETE FROM t; --'", false));
         assert!(is_write_any("SELECT 1 /*!50000 ; DROP TABLE t */"));

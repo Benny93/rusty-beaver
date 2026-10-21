@@ -508,8 +508,8 @@ impl AppView {
         })
         .detach();
         // Passwords move into the OS keychain the first time (and new connections get ids).
-        let (loaded, resave) = db::load_connections();
-        let mut status = "Ready".to_string();
+        let (loaded, resave, note) = db::load_connections();
+        let mut status = note.unwrap_or_else(|| "Ready".to_string());
         if resave {
             match db::save_connections(&loaded) {
                 Ok(w) if !w.is_empty() => status = w.join("; "),

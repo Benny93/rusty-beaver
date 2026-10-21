@@ -1113,14 +1113,28 @@ fn keychain_note(id: &str, password: Option<&str>) {
 
 /// Saved connections, passwords read back from the keychain; on first start a bundled demo
 /// SQLite database. The flag says the file should be saved again (new ids, or plain-text
-/// passwords to move into the keychain).
-pub fn load_connections() -> (Vec<ConnConfig>, bool) {
-    let mut list: Vec<ConnConfig> = match std::fs::read_to_string(connections_path())
+/// passwords to move into the keychain). A file that does not parse is moved aside (the
+/// message says where) instead of being overwritten by the next save.
+pub fn load_connections() -> (Vec<ConnConfig>, bool, Option<String>) {
+    let path = connections_path();
+    let mut note = None;
+    let mut list: Vec<ConnConfig> = match std::fs::read_to_string(&path)
         .ok()
-        .and_then(|t| serde_json::from_str(&t).ok())
+        .map(|t| serde_json::from_str(&t))
     {
-        Some(v) => v,
-        None => {
+        Some(Ok(v)) => v,
+        bad => {
+            if let Some(Err(e)) = bad {
+                let aside = path.with_extension("json.invalid");
+                note = Some(match std::fs::rename(&path, &aside) {
+                    Ok(()) => format!(
+                        "{} did not load ({e}); it is now {}",
+                        path.display(),
+                        aside.display()
+                    ),
+                    Err(r) => format!("{} did not load ({e}) nor move aside ({r})", path.display()),
+                });
+            }
             return match demo_db() {
                 Ok(path) => (
                     vec![ConnConfig {
@@ -1130,8 +1144,9 @@ pub fn load_connections() -> (Vec<ConnConfig>, bool) {
                         ..Default::default()
                     }],
                     true,
+                    note,
                 ),
-                Err(_) => (Vec::new(), false),
+                Err(_) => (Vec::new(), false, note),
             };
         }
     };
@@ -1156,7 +1171,7 @@ pub fn load_connections() -> (Vec<ConnConfig>, bool) {
             resave = true; // a plain-text password from before: move it into the keychain
         }
     }
-    (list, resave)
+    (list, resave, None)
 }
 
 /// Save connections. Passwords go into the OS keychain and connections.json keeps none; Vault
@@ -2067,7 +2082,7 @@ mod tests {
             raw.contains("database/creds/ro") && raw.contains("vault_dynamic"),
             "Vault paths are no secrets"
         );
-        let (back, resave) = load_connections();
+        let (back, resave, _) = load_connections();
         assert!(!resave);
         assert_eq!(
             back.iter().map(|c| c.password.as_str()).collect::<Vec<_>>(),
@@ -2079,12 +2094,19 @@ mod tests {
             r#"[{"name":"old","driver":"mysql","password":"plain"}]"#,
         )
         .unwrap();
-        let (old, resave) = load_connections();
+        let (old, resave, _) = load_connections();
         assert!(resave && !old[0].id.is_empty() && old[0].password == "plain");
         save_connections(&old).unwrap();
         assert!(!std::fs::read_to_string(&file).unwrap().contains("plain"));
         forget_password(&old[0]);
         assert_eq!(secrets::load(&old[0].id).unwrap(), None);
+        // A file that does not parse is moved aside, not overwritten by the next save.
+        std::fs::write(&file, r#"[{"name":"typo",}]"#).unwrap();
+        let (_, _, note) = load_connections();
+        let aside = file.with_extension("json.invalid");
+        assert!(note.unwrap().contains("did not load"));
+        assert_eq!(std::fs::read_to_string(&aside).unwrap(), r#"[{"name":"typo",}]"#);
+        let _ = std::fs::remove_file(&aside);
         let _ = std::fs::remove_file(&file);
     }
 

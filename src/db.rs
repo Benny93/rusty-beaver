@@ -171,12 +171,12 @@ impl Driver {
         }
     }
 
-    /// Query describing a table's columns: rows of (name, type, nullable, key).
+    /// Query describing a table's columns: rows of (name, type, nullable, key, generated).
     fn columns_sql(self, table: &str) -> String {
         let lit = |s: &str| self.literal(s);
         match self {
             Driver::Sqlite => format!(
-                "SELECT name, type, CASE \"notnull\" WHEN 1 THEN 'NO' ELSE 'YES' END, CASE WHEN pk > 0 THEN 'PK' ELSE '' END FROM pragma_table_info({})",
+                "SELECT name, type, CASE \"notnull\" WHEN 1 THEN 'NO' ELSE 'YES' END, CASE WHEN pk > 0 THEN 'PK' ELSE '' END, '' FROM pragma_table_info({})",
                 lit(table)
             ),
             Driver::Postgres => {
@@ -185,9 +185,9 @@ impl Driver {
                     // format_type: varchar(50), numeric(10,2), int[], enum names (data_type has
                     // character varying, numeric, ARRAY, USER-DEFINED)
                     "SELECT c.column_name, (SELECT format_type(a.atttypid, a.atttypmod) FROM pg_attribute a \
-                     WHERE a.attrelid = (quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))::regclass AND a.attname = c.column_name) \
-                     || CASE WHEN c.is_generated = 'ALWAYS' OR c.identity_generation = 'ALWAYS' THEN ' generated' ELSE '' END, \
-                     c.is_nullable, CASE WHEN k.column_name IS NOT NULL THEN 'PK' ELSE '' END \
+                     WHERE a.attrelid = (quote_ident(c.table_schema) || '.' || quote_ident(c.table_name))::regclass AND a.attname = c.column_name), \
+                     c.is_nullable, CASE WHEN k.column_name IS NOT NULL THEN 'PK' ELSE '' END, \
+                     CASE WHEN c.is_generated = 'ALWAYS' OR c.identity_generation = 'ALWAYS' THEN 'generated' ELSE '' END \
                      FROM information_schema.columns c LEFT JOIN (SELECT ku.column_name FROM information_schema.table_constraints tc \
                      JOIN information_schema.key_column_usage ku ON tc.constraint_name = ku.constraint_name AND tc.table_schema = ku.table_schema \
                      WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = {s} AND tc.table_name = {t}) k ON k.column_name = c.column_name \
@@ -198,17 +198,17 @@ impl Driver {
             }
             Driver::Mysql => format!(
                 // (DEFAULT_GENERATED is a default expression, not a generated column)
-                "SELECT column_name, CONCAT(column_type, IF(extra IN ('VIRTUAL GENERATED', 'STORED GENERATED'), ' generated', '')), \
-                is_nullable, IF(column_key = 'PRI', 'PK', '') FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = {} ORDER BY ordinal_position",
+                "SELECT column_name, column_type, is_nullable, IF(column_key = 'PRI', 'PK', ''), \
+                IF(extra IN ('VIRTUAL GENERATED', 'STORED GENERATED'), 'generated', '') FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = {} ORDER BY ordinal_position",
                 lit(table)
             ),
         }
     }
 }
 
-/// What the Columns view adds to the type of a column that cannot be written (generated,
+/// The Columns view's Generated value of a column that cannot be written (generated,
 /// identity GENERATED ALWAYS).
-pub const GENERATED: &str = " generated";
+pub const GENERATED: &str = "generated";
 
 /// Pending grid edits of a table editor, by original row index.
 #[derive(Default, Clone, Debug)]
@@ -727,7 +727,7 @@ impl Session {
                 format!(
                     "    {} {}{}{}",
                     driver.quote(text(&c[0])),
-                    text(&c[1]).trim_end_matches(GENERATED),
+                    text(&c[1]),
                     if text(&c[2]) == "NO" { " NOT NULL" } else { "" },
                     extras.get(text(&c[0])).map_or("", String::as_str)
                 )
@@ -883,15 +883,22 @@ impl Session {
         if r.rows.is_empty() && driver == Driver::Postgres {
             // a materialized view: not in information_schema.columns
             r = self.query(&format!(
-                "SELECT a.attname, format_type(a.atttypid, a.atttypmod), CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, '' \
+                "SELECT a.attname, format_type(a.atttypid, a.atttypmod), CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, '', '' \
                  FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid \
                  WHERE c.oid = to_regclass({}) AND c.relkind = 'm' AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum",
                 driver.literal(&driver.table_ref(table))
             ))?;
         }
-        r.columns = ["Column", "Type", "Nullable", "Key", "References"]
-            .map(String::from)
-            .to_vec();
+        r.columns = [
+            "Column",
+            "Type",
+            "Nullable",
+            "Key",
+            "References",
+            "Generated",
+        ]
+        .map(String::from)
+        .to_vec();
         let fks: Vec<ForeignKey> = self
             .foreign_keys()
             .unwrap_or_default()
@@ -914,7 +921,10 @@ impl Session {
             if !refs.is_empty() && text(&row[3]).is_empty() {
                 row[3] = Some("FK".into());
             }
+            // References before Generated: readers by index keep 4 for the references
+            let generated = row.pop().flatten();
             row.push(Some(refs));
+            row.push(generated);
         }
         Ok(r)
     }
@@ -2369,14 +2379,14 @@ mod tests {
             [("t".to_string(), "TABLE".to_string())]
         );
         let cols = s.columns("t").unwrap();
-        assert_eq!(texts(&cols.rows)[0], ["id", "INTEGER", "YES", "PK", ""]);
+        assert_eq!(texts(&cols.rows)[0], ["id", "INTEGER", "YES", "PK", "", ""]);
         s.query(
             "CREATE TABLE c(id INTEGER PRIMARY KEY, t_id INT REFERENCES t(id), x INT REFERENCES t)",
         )
         .unwrap();
         let fk = s.columns("c").unwrap();
-        assert_eq!(texts(&fk.rows)[1][3..], ["FK", "t.id"]);
-        assert_eq!(texts(&fk.rows)[2][3..], ["FK", "t.id"]); // bare REFERENCES t: its primary key
+        assert_eq!(texts(&fk.rows)[1][3..5], ["FK", "t.id"]);
+        assert_eq!(texts(&fk.rows)[2][3..5], ["FK", "t.id"]); // bare REFERENCES t: its primary key
         assert_eq!(s.foreign_keys().unwrap().len(), 2);
         // REFERENCES T: the table as it is named (the ER diagram matches names exactly)
         s.query("CREATE TABLE d(t_id INT REFERENCES T(id))")

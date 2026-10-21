@@ -542,7 +542,7 @@ impl AppView {
                         .rows
                         .iter()
                         .filter(|c| {
-                            !db::text(&c[1]).ends_with(db::GENERATED)
+                            db::text(&c[5]) != db::GENERATED
                                 || kind != "insert" && db::text(&c[3]) == "PK"
                         })
                         .map(|c| (db::text(&c[0]).to_string(), db::text(&c[3]) == "PK"))

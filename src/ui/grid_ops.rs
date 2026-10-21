@@ -286,7 +286,7 @@ impl AppView {
                 // Postgres and MySQL mark them in the type
                 let marked: Vec<String> = cols
                     .iter()
-                    .filter(|c| db::text(&c[1]).ends_with(db::GENERATED))
+                    .filter(|c| db::text(&c[5]) == db::GENERATED)
                     .map(|c| db::text(&c[0]).to_string())
                     .collect();
                 let new = grid.update(cx, |g, cx| {

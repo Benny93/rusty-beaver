@@ -89,7 +89,7 @@ def main():
             tables = [t["name"] for t in call("connect", {"connection": DB})["tables"]]
             assert tables == ["beavers", "leaderboard", "lodges", "missions"], tables
             cols = call("describe_table", {"connection": DB, "table": "missions"})["rows"]
-            assert ["leader_id", "INTEGER", "YES", "FK", "beavers.id"] in cols, cols
+            assert ["leader_id", "INTEGER", "YES", "FK", "beavers.id", ""] in cols, cols
             assert "no table" in call("describe_table", {"connection": DB, "table": "usres"}, ok=False)
             assert "usres" not in json.dumps(call("get_state")["selected"])  # not selected in the navigator
             before = len(call("get_state")["tabs"])

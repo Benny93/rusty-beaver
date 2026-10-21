@@ -92,6 +92,12 @@ pub struct LimitArg {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ScriptArg {
+    /// Absolute path of the .sql file.
+    pub path: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct PathArg {
     /// Absolute output path; .csv, .tsv, .json, .md, .txt or .sql (no extension: CSV).
     pub path: String,
@@ -668,7 +674,7 @@ impl Tools {
     #[tool(description = "Open a .sql file in a new SQL editor tab (on the selected connection).")]
     async fn open_script(
         &self,
-        Parameters(a): Parameters<PathArg>,
+        Parameters(a): Parameters<ScriptArg>,
     ) -> Result<CallToolResult, McpError> {
         self.ui("open_script", json!({ "path": a.path })).await
     }
@@ -782,7 +788,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Export the active result grid (as shown: sorted, with pending edits) to a file; the extension picks the format: .csv, .tsv, .json, .md or .sql (INSERT statements)."
+        description = "Export the active result grid (as shown: sorted, with pending edits) to a file; the extension picks the format: .csv, .tsv, .json, .md, .txt or .sql (INSERT statements)."
     )]
     async fn export_csv(
         &self,

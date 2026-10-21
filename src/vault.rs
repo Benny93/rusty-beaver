@@ -336,8 +336,10 @@ fn oidc_login(
                 }
                 let p = query_params(&target);
                 // an old tab or a prefetch of another sign-in: answer it, keep waiting for ours
-                let ours = state.as_ref().is_none_or(|s| p.get("state") == Some(s))
-                    && (p.contains_key("code") || p.contains_key("error"));
+                // (an IdP refusing the sign-in may send its error without the state)
+                let ours = (state.as_ref().is_none_or(|s| p.get("state") == Some(s))
+                    && (p.contains_key("code") || p.contains_key("error")))
+                    || p.contains_key("error") && !p.contains_key("state");
                 if !ours {
                     let _ = stream.write_all(
                         b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -615,6 +617,13 @@ mod tests {
                             .to_string(),
                         None,
                     )
+                } else if target.starts_with("/deny") {
+                    // a sign-in the IdP refused: error, and no state
+                    (
+                        302,
+                        String::new(),
+                        Some(format!("{redirect}?error=access_denied")),
+                    )
                 } else if target.starts_with("/stale") {
                     // a callback of another sign-in (an old tab, a prefetch)
                     (
@@ -716,6 +725,20 @@ mod tests {
         assert_eq!(
             oidc_login(&addr, "oidc", "", 0, &stale_first).unwrap(),
             "s.fake"
+        );
+        // a refused sign-in without state ends it with the IdP's error, not after minutes
+        let deny_addr = addr.clone();
+        let deny = move |_: &str| {
+            let url = format!("{deny_addr}/deny");
+            std::thread::spawn(move || {
+                let _ = ureq::get(&url).call();
+            });
+        };
+        let t0 = Instant::now();
+        let e = oidc_login(&addr, "oidc", "", 0, &deny).unwrap_err();
+        assert!(
+            e.contains("access_denied") && t0.elapsed() < Duration::from_secs(10),
+            "{e}"
         );
         // a mount typed as /oidc/ is the mount oidc
         assert_eq!(

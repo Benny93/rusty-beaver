@@ -270,7 +270,9 @@ fn compare(a: &Option<String>, b: &Option<String>) -> Ordering {
     rank(a)
         .cmp(&rank(b))
         .then_with(|| match (num(sa), num(sb)) {
-            (Some(x), Some(y)) => x.total_cmp(&y),
+            // past 2^53 two ids can be one f64: the text tells them apart (and stays a total
+            // order, which comparing integers exactly next to floats would not)
+            (Some(x), Some(y)) => x.total_cmp(&y).then_with(|| sa.cmp(sb)),
             _ => sa
                 .to_lowercase()
                 .cmp(&sb.to_lowercase())
@@ -462,6 +464,12 @@ mod tests {
         mixed.sort_by(compare);
         // NULL, numbers, then text (a text 'NULL' is text)
         assert_eq!(texts(&[mixed]), [["NULL", "2", "10", "1a", "Nan"]]);
+        // big ids (bigint, snowflake) are apart beyond f64 precision
+        let (a, b) = (
+            Some("9007199254740993".into()),
+            Some("9007199254740992".into()),
+        );
+        assert_eq!(compare(&a, &b), std::cmp::Ordering::Greater);
         g.changes.cells.insert((0, 0), Some("1".into()));
         assert_eq!(g.value(g.row_id(2).unwrap(), 0), "1");
         let d = g.add_row();

@@ -277,6 +277,15 @@ def main():
             # BEGIN …; COMMIT in one script leaves nothing open
             call("run_sql", {"connection": DB, "sql": "BEGIN; INSERT INTO u VALUES (6); COMMIT"})
             assert not [c for c in call("get_state")["connections"] if c["name"] == DB][0]["in_transaction"]
+            # a BEGIN whose session was disconnected while it ran leaves no transaction behind
+            import threading
+            slow = "BEGIN; WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM n WHERE x < 30000000) SELECT count(*) FROM n"
+            th = threading.Thread(target=lambda: call("run_sql", {"connection": DB, "sql": slow}))
+            th.start()
+            time.sleep(0.3)
+            call("disconnect", {"connection": DB})
+            th.join(20)
+            assert not [c for c in call("get_state")["connections"] if c["name"] == DB][0]["in_transaction"]
             # ROLLBACK TRANSACTION TO a savepoint keeps the transaction open
             call("run_sql", {"connection": DB, "sql": "INSERT INTO lodges(name, river) VALUES ('Sp Lodge', 'Main')"})
             call("run_sql", {"connection": DB, "sql": "SAVEPOINT s"})

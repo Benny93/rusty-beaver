@@ -277,6 +277,11 @@ impl AppView {
             window,
             cx,
             Box::new(move |v, r, window, cx| {
+                // disconnected while it ran: that session and its transaction are gone, so
+                // nothing of it is tracked any more
+                let manual = manual
+                    && v.conn_ix(conn)
+                        .is_some_and(|i| v.conns[i].status == ConnStatus::Connected);
                 // a write that failed is no statement of the transaction (it stays open)
                 if manual
                     && write
